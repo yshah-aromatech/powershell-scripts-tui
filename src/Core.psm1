@@ -143,6 +143,12 @@ function Initialize-Pss {
 }
 
 function Get-PssConfig { $script:Config }
+
+# scripts repo URL: SCRIPTS_REPO env var (e.g. via .env) overrides config.json
+function Get-PssScriptsRepo {
+    if ($env:SCRIPTS_REPO) { return [string]$env:SCRIPTS_REPO }
+    [string]$script:Config.scriptsRepo
+}
 function Get-PssPaths { $script:Paths }
 function Get-PssAppDir { $script:AppDir }
 
@@ -218,6 +224,6 @@ function Copy-PssClipboard {
     'copied via OSC 52'
 }
 
-Export-ModuleMember -Function Initialize-Pss, Get-PssConfig, Get-PssPaths, Get-PssAppDir,
+Export-ModuleMember -Function Initialize-Pss, Get-PssConfig, Get-PssScriptsRepo, Get-PssPaths, Get-PssAppDir,
 Get-PssTheme, Read-PssEnvFile, Register-PssSecret, Hide-PssSecret,
 Format-PssDuration, Copy-PssClipboard, ConvertTo-AnsiFg, ConvertTo-AnsiBg

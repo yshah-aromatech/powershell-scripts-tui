@@ -12,12 +12,13 @@ function Sync-PssRepo {
     $paths = Get-PssPaths
     $emit = { param($l) & $OnOutput (Hide-PssSecret $l) }
 
-    if (-not $cfg.scriptsRepo) {
-        & $emit 'scriptsRepo is not set in config.json'
+    $repo = Get-PssScriptsRepo
+    if (-not $repo) {
+        & $emit 'scripts repo is not set — set SCRIPTS_REPO in .env or scriptsRepo in config.json'
         return $false
     }
 
-    $url = [string]$cfg.scriptsRepo
+    $url = $repo
     $token = $env:GITHUB_TOKEN
     if ($token -and $url -match '^https://' -and $url -notmatch '@') {
         $url = $url -replace '^https://', "https://x-access-token:$token@"
@@ -28,10 +29,10 @@ function Sync-PssRepo {
     $gitOut = $null
 
     if (-not (Test-Path (Join-Path $dir '.git'))) {
-        & $emit "cloning $($cfg.scriptsRepo) (branch $branch)..."
+        & $emit "cloning $repo (branch $branch)..."
         $gitOut = git clone --branch $branch $url $dir 2>&1
     } else {
-        & $emit "syncing $($cfg.scriptsRepo) (hard reset to origin/$branch)..."
+        & $emit "syncing $repo (hard reset to origin/$branch)..."
         git -C $dir remote set-url origin $url 2>&1 | Out-Null  # refresh token
         $gitOut = @(
             git -C $dir fetch origin 2>&1

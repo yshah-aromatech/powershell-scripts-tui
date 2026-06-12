@@ -642,7 +642,8 @@ function Show-TuiFrame {
 
     # ---- header -----------------------------------------------------------
     $title = ' PowerShell Scripts TUI '
-    $repo = if ($cfg.scriptsRepo) { ($cfg.scriptsRepo -replace '^https://(x-access-token:[^@]+@)?', '') } else { 'no scriptsRepo configured' }
+    $repoUrl = Get-PssScriptsRepo
+    $repo = if ($repoUrl) { ($repoUrl -replace '^https://(x-access-token:[^@]+@)?', '') } else { 'no scripts repo configured' }
     $right = " $repo · $([Environment]::MachineName) "
     if ($title.Length + $right.Length -gt $W) {
         $right = Format-TuiPad -Text $right -Width ([Math]::Max(0, $W - $title.Length))

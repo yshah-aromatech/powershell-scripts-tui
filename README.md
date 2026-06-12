@@ -63,7 +63,7 @@ cd powershell-scripts-tui && ./install.sh
 
 3. Configure:
    - `config.json` — set `scriptsRepo` (HTTPS URL of your private scripts repo) and `n8nWebhookUrl`
-   - `.env` — set `GITHUB_TOKEN=` to the PAT (used to clone/pull the scripts repo; redacted in all TUI output)
+   - `.env` — set `GITHUB_TOKEN=` to the PAT (used to clone/pull the scripts repo; redacted in all TUI output). `SCRIPTS_REPO=` can also be set here and overrides `scriptsRepo` in `config.json`
 
 4. Run: `psscripts`
 
@@ -152,7 +152,7 @@ Otherwise the TUI prints the exact commands to run manually (and still upgrades 
 
 | Key | Description | Default |
 | --- | --- | --- |
-| `scriptsRepo` | HTTPS URL of the private scripts repo | — |
+| `scriptsRepo` | HTTPS URL of the private scripts repo (or set `SCRIPTS_REPO` in `.env`) | — |
 | `branch` | branch to sync | `main` |
 | `dataDir` | where scripts/module dirs/logs/history live | `~/.psscripts` |
 | `n8nWebhookUrl` | n8n webhook endpoint (or set `N8N_WEBHOOK_URL` in `.env`) | — |
