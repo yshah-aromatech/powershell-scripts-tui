@@ -48,7 +48,7 @@ This app itself lives in a private repo, so the server needs credentials to clon
 2. Clone and install (one command):
 
 ```bash
-git clone https://YOUR_PAT@github.com/YOUR_ORG/powershell-scripts-tui.git && cd powershell-scripts-tui && ./install.sh
+git clone https://YOUR_PAT@github.com/armtch-dev/powershell-scripts-tui.git && cd powershell-scripts-tui && ./install.sh
 ```
 
 To avoid the token appearing in the remote URL / shell history, use the git credential store instead:
