@@ -54,11 +54,23 @@ function Get-PssScriptDeps {
             $n -is [System.Management.Automation.Language.CommandAst] -and
             $n.GetCommandName() -in @('Import-Module', 'ipmo')
         }, $true)
-    # parameters of Import-Module that consume the following element as their value
-    $valueParams = @('Function', 'Cmdlet', 'Variable', 'Alias', 'Prefix', 'MinimumVersion',
-        'MaximumVersion', 'RequiredVersion', 'ArgumentList', 'FullyQualifiedName', 'Scope')
+    # parameters that consume the following element as their value (so it must NOT
+    # be mistaken for a module name). Includes Import-Module's own value parameters
+    # plus the common parameters (and their aliases) — e.g. `-ErrorAction Stop`,
+    # `-ErrorVariable e`, whose string values were being picked up as module names.
+    $valueParams = @(
+        'Function', 'Cmdlet', 'Variable', 'Alias', 'Prefix', 'MinimumVersion',
+        'MaximumVersion', 'RequiredVersion', 'ArgumentList', 'Args', 'FullyQualifiedName',
+        'Scope', 'PSSession', 'CimSession', 'CimResourceUri', 'CimNamespace',
+        # common parameters that take a value
+        'ErrorAction', 'ea', 'WarningAction', 'wa', 'InformationAction', 'infa',
+        'ProgressAction', 'proga', 'ErrorVariable', 'ev', 'WarningVariable', 'wv',
+        'InformationVariable', 'iv', 'OutVariable', 'ov', 'OutBuffer', 'ob',
+        'PipelineVariable', 'pv'
+    )
     foreach ($call in $calls) {
         $elements = $call.CommandElements
+        $gotName = $false   # Import-Module's only positional is Name (position 0)
         for ($i = 1; $i -lt $elements.Count; $i++) {
             $el = $elements[$i]
             if ($el -is [System.Management.Automation.Language.CommandParameterAst]) {
@@ -67,7 +79,12 @@ function Get-PssScriptDeps {
                 if ($valueParams -contains $el.ParameterName) { $i++ } # skip this parameter's value
                 continue                                             # switches consume nothing
             }
-            foreach ($name in (Resolve-PssModuleElement $el)) { [void]$deps.Add($name) }
+            # bare positional element — only the first one carries module name(s);
+            # anything later is a stray value, not a second module to install.
+            if (-not $gotName) {
+                foreach ($name in (Resolve-PssModuleElement $el)) { [void]$deps.Add($name) }
+                $gotName = $true
+            }
         }
     }
 
