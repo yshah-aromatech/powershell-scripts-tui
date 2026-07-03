@@ -47,28 +47,39 @@ Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/d
 
 ## Installation
 
-1. Clone and install (one command):
+1. Install (one-liner — no credentials needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yshah-aromatech/powershell-scripts-tui/main/install.sh | bash
+```
+
+`install.sh` installs missing prerequisites (git, PowerShell 7 via the Microsoft apt repo), clones the app to `~/powershell-scripts-tui` (override with `PSSCRIPTS_APP_DIR`), creates `config.json` + `.env` from the examples, and adds a `psscripts` launcher to `~/.local/bin`. Prefer to inspect first? Clone and run it from the checkout instead:
 
 ```bash
 git clone https://github.com/yshah-aromatech/powershell-scripts-tui.git && cd powershell-scripts-tui && ./install.sh
 ```
 
-`install.sh` installs missing prerequisites (git, PowerShell 7 via the Microsoft apt repo), creates `config.json` + `.env` from the examples, and adds a `psscripts` launcher to `~/.local/bin`.
-
-2. Create a fine-grained PAT for your *scripts* repo (github.com → Settings → Developer settings → Fine-grained tokens):
+2. If your *scripts* repo is private, create a fine-grained PAT for it (github.com → Settings → Developer settings → Fine-grained tokens):
    - Repository access: select your PowerShell scripts repo
    - Permissions: **Contents: Read-only**
 
 3. Configure:
    - `config.json` — set `scriptsRepo` (HTTPS URL of your private scripts repo) and `n8nWebhookUrl`
-   - `.env` — set `GITHUB_TOKEN=` to the PAT (used to clone/pull the scripts repo; redacted in all TUI output). `SCRIPTS_REPO=` can also be set here and overrides `scriptsRepo` in `config.json`
+   - `.env` — if the scripts repo is private, set `GITHUB_TOKEN=` to the PAT (used to clone/pull the scripts repo; redacted in all TUI output). `SCRIPTS_REPO=` can also be set here and overrides `scriptsRepo` in `config.json`
 
 4. Run: `psscripts`
 
-## Updating the app
+## Updating
+
+Everything updates from inside the TUI:
+
+- **`U` — update this app**: `git pull --ff-only` on the install directory; restart `psscripts` to apply.
+- **`u` — update PowerShell + modules**: upgrades PowerShell via apt (needs passwordless sudo for `apt-get`, or it prints the command to run manually), then upgrades every script's module dir.
+
+Or from the shell — rerunning the install one-liner is also safe (it pulls instead of recloning):
 
 ```bash
-cd powershell-scripts-tui && git pull
+cd ~/powershell-scripts-tui && git pull
 ```
 
 ## Scripts repo layout
