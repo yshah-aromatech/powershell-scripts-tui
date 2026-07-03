@@ -45,29 +45,19 @@ Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/d
 | mouse | wheel scrolls the output panel, click selects a script |
 | `q` / `Ctrl+C` | quit |
 
-## Installation (private repo)
+## Installation
 
-This app itself lives in a private repo, so the server needs credentials to clone it. With HTTPS + a Personal Access Token (PAT):
-
-1. Create a fine-grained PAT (github.com → Settings → Developer settings → Fine-grained tokens):
-   - Repository access: select this repo and your PowerShell scripts repo
-   - Permissions: **Contents: Read-only**
-
-2. Clone and install (one command):
+1. Clone and install (one command):
 
 ```bash
-git clone https://YOUR_PAT@github.com/armtch-dev/powershell-scripts-tui.git && cd powershell-scripts-tui && ./install.sh
-```
-
-To avoid the token appearing in the remote URL / shell history, use the git credential store instead:
-
-```bash
-git config --global credential.helper store
-git clone https://github.com/YOUR_ORG/powershell-scripts-tui.git   # username: your GH username, password: the PAT
-cd powershell-scripts-tui && ./install.sh
+git clone https://github.com/yshah-aromatech/powershell-scripts-tui.git && cd powershell-scripts-tui && ./install.sh
 ```
 
 `install.sh` installs missing prerequisites (git, PowerShell 7 via the Microsoft apt repo), creates `config.json` + `.env` from the examples, and adds a `psscripts` launcher to `~/.local/bin`.
+
+2. Create a fine-grained PAT for your *scripts* repo (github.com → Settings → Developer settings → Fine-grained tokens):
+   - Repository access: select your PowerShell scripts repo
+   - Permissions: **Contents: Read-only**
 
 3. Configure:
    - `config.json` — set `scriptsRepo` (HTTPS URL of your private scripts repo) and `n8nWebhookUrl`
@@ -223,3 +213,7 @@ Not implemented yet — natural next steps:
 - **Notifications** — optional ntfy/Slack/Telegram ping on failure (n8n can do this today from the webhook)
 - **Windows support** — Task Scheduler instead of crontab, winget instead of apt (the rest is already cross-platform PowerShell; runs already work without `/proc`, just without resource stats)
 - **Secret store integration** — pull per-script secrets from `Microsoft.PowerShell.SecretManagement` instead of plaintext `.env` files
+
+## License
+
+[AGPL-3.0](LICENSE)
