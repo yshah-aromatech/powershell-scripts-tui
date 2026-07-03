@@ -42,7 +42,7 @@ Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/d
 | `/` | filter the script list (live as you type; `esc` restores) |
 | `?` | help overlay with all keybindings |
 | `PgUp` / `PgDn` / `Home` / `End` | scroll output (scrollbar shows position; auto-follows new output until you scroll up, `End` re-engages follow) |
-| mouse | wheel scrolls the output panel, click selects a script |
+| mouse | wheel scrolls the output panel, click selects a script; clicking a device-login code (e.g. Microsoft device sign-in) in the output copies it to the clipboard |
 | `q` / `Ctrl+C` | quit |
 
 ## Installation

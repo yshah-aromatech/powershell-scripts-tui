@@ -158,13 +158,45 @@ function Invoke-TuiMouse {
         return
     }
     if ($script:S.Mode -eq 'list' -and $Press -and $Button -eq 0) {
-        # left click in the list pane selects that row (body starts at row 3)
+        # left click (body starts at row 3)
         $lw = Get-TuiListWidth
         $row = $Y - 3
-        if ($X -le ($lw + 1) -and $row -ge 0 -and $row -lt (Get-TuiBodyHeight)) {
+        if ($row -lt 0 -or $row -ge (Get-TuiBodyHeight)) { return }
+        if ($X -le ($lw + 1)) {
+            # list pane: select that row
             $idx = $script:S.ListTop + $row
             if ($idx -lt $script:S.Visible.Count) { $script:S.Selected = $idx }
         }
+        elseif ($X -ge ($lw + 3)) {
+            # output pane: clicking a device-login code copies it
+            Copy-TuiCodeAt -Row $row -Cell ($X - $lw - 3)
+        }
+    }
+}
+
+# Click-to-copy for device-login codes (e.g. Microsoft "enter the code
+# ABC123XYZ" sign-ins): if the clicked word in the output panel is 8-10
+# uppercase letters/digits, copy it to the clipboard.
+function Copy-TuiCodeAt {
+    param([int]$Row, [int]$Cell)
+    $idx = $script:S.Scroll + $Row
+    if ($idx -ge $script:S.Wrapped.Count) { return }
+    $line = $script:S.Wrapped[$idx]
+    # clicked display cell -> char index (wide chars occupy 2 cells)
+    $pos = -1; $cells = 0; $i = 0
+    while ($i -lt $line.Length) {
+        $len = if ([char]::IsHighSurrogate($line[$i]) -and ($i + 1) -lt $line.Length) { 2 } else { 1 }
+        $cells += Get-PssDisplayWidth ($line.Substring($i, $len))
+        if ($Cell -lt $cells) { $pos = $i; break }
+        $i += $len
+    }
+    if ($pos -lt 0 -or "$($line[$pos])" -match '\s') { return }
+    $start = $pos; while ($start -gt 0 -and "$($line[$start - 1])" -notmatch '\s') { $start-- }
+    $end = $pos; while ($end -lt ($line.Length - 1) -and "$($line[$end + 1])" -notmatch '\s') { $end++ }
+    $word = $line.Substring($start, $end - $start + 1).Trim('.', ',', ':', ';', '"', "'", '(', ')')
+    if ($word -cmatch '^[A-Z0-9]{8,10}$') {
+        $how = Copy-PssClipboard -Text $word
+        Set-TuiStatus "code $word $how"
     }
 }
 
@@ -1025,6 +1057,7 @@ function Get-TuiOutputRows {
         $text = if ($idx -lt $wrapped.Count) { $wrapped[$idx] } else { '' }
         $color = $t.Fg
         if ($text -match '^──|^────') { $color = $t.Blue }
+        elseif ($text -match '^WARNING:') { $color = $t.Muted }   # advisory noise — keep it quiet
         elseif ($text -match 'FAILED|failed|error|Error|exception|Exception') { $color = $t.Red }
         elseif ($text -match ': success ') { $color = $t.Green }
         $bar = if ($thumbPos -ge 0) {
@@ -1157,7 +1190,7 @@ function Get-TuiHelpRows {
         @('g / G', 'jump to the top / bottom of the list'),
         @('j / k', 'navigate the list (vim-style)'),
         @('pgup/pgdn', 'scroll output (end re-engages follow)'),
-        @('mouse', 'wheel scrolls output · click selects a script'),
+        @('mouse', 'wheel scrolls output · click selects a script · click an auth code to copy it'),
         @('?', 'this help'),
         @('q', 'quit'),
         @('', ''),
