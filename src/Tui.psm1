@@ -28,6 +28,7 @@ function Start-PssTui {
         WrapWidth    = 0
         Scroll       = 0
         Follow       = $true
+        SearchTerm   = ''
         OutTitle     = 'output'
         Mode         = 'list'   # list|deps|input|confirm|env|history|help
         Input        = $null
@@ -630,6 +631,14 @@ function Invoke-TuiKeyList {
         } else { $script:S.Quit = $true }
         return
     }
+    if ($Key.Key -eq [ConsoleKey]::F -and ($Key.Modifiers -band [ConsoleModifiers]::Control)) {
+        Open-TuiInput -Prompt 'search output (empty = clear)' -Text $script:S.SearchTerm -OnSubmit {
+            param($value)
+            $script:S.SearchTerm = $value.Trim()
+            if ($script:S.SearchTerm) { Move-TuiSearch 1 } else { Set-TuiStatus 'search cleared' }
+        }
+        return
+    }
     if ($Key.Key -eq [ConsoleKey]::Tab) {
         $script:S.FocusPane = if ($script:S.FocusPane -eq 'output') { 'list' } else { 'output' }
         Set-TuiStatus "focus: $($script:S.FocusPane) pane (j/k scroll it — tab switches back)"
@@ -697,6 +706,8 @@ function Invoke-TuiKeyList {
                 Set-TuiStatus "cleared $n queued run(s)"
             } else { Set-TuiStatus 'queue is empty' }
         }
+        'n' { Move-TuiSearch 1 }
+        'N' { Move-TuiSearch -1 }
         'y' { Invoke-TuiCopy }
         'c' { Clear-TuiOutput }
         '?' { $script:S.Mode = 'help' }
@@ -725,6 +736,36 @@ function Move-TuiScroll {
     $script:S.Scroll = [Math]::Min([Math]::Max(0, $cur + $Delta), $maxScroll)
     $script:S.Follow = ($script:S.Scroll -ge $maxScroll)
     $script:S.Dirty = $true
+}
+
+# jump to the next (+1) / previous (-1) output line matching SearchTerm.
+# Matches are recomputed each call so new output is always searchable.
+function Move-TuiSearch {
+    param([int]$Dir)
+    $term = $script:S.SearchTerm
+    if (-not $term) { Set-TuiStatus 'no search term — ctrl+f to search the output'; return }
+    $wrapped = $script:S.Wrapped
+    $hits = [System.Collections.Generic.List[int]]::new()
+    for ($i = 0; $i -lt $wrapped.Count; $i++) {
+        if ($wrapped[$i].Contains($term, [StringComparison]::OrdinalIgnoreCase)) { $hits.Add($i) }
+    }
+    if ($hits.Count -eq 0) { Set-TuiStatus "no matches for '$term'"; return }
+    $body = Get-TuiBodyHeight
+    $maxScroll = [Math]::Max(0, $wrapped.Count - $body)
+    $cur = if ($script:S.Follow) { $maxScroll } else { $script:S.Scroll }
+    $anchor = $cur + [int]($body / 2)   # the centered line; jumps land matches here
+    $target = -1
+    if ($Dir -gt 0) {
+        foreach ($h in $hits) { if ($h -gt $anchor) { $target = $h; break } }
+        if ($target -lt 0) { $target = $hits[0] }   # wrap to the first match
+    } else {
+        for ($k = $hits.Count - 1; $k -ge 0; $k--) { if ($hits[$k] -lt $anchor) { $target = $hits[$k]; break } }
+        if ($target -lt 0) { $target = $hits[$hits.Count - 1] }
+    }
+    $script:S.Scroll = [Math]::Min([Math]::Max(0, $target - [int]($body / 2)), $maxScroll)
+    $script:S.Follow = $false
+    $script:S.Dirty = $true
+    Set-TuiStatus "match $($hits.IndexOf($target) + 1)/$($hits.Count) for '$term' — n next · N prev"
 }
 
 function Invoke-TuiKeyDeps {
@@ -1112,7 +1153,14 @@ function Get-TuiOutputRows {
         $bar = if ($thumbPos -ge 0) {
             if ($i -ge $thumbPos -and $i -lt ($thumbPos + $thumbLen)) { "$($t.Blue)█" } else { "$($t.Muted)│" }
         } else { ' ' }
-        $rows += "$color$(Format-TuiPad -Text $text -Width $textW)$bar"
+        $padded = Format-TuiPad -Text $text -Width $textW
+        # inverse-highlight search matches; ANSI-only insertion, width unchanged
+        $term = $script:S.SearchTerm
+        if ($term -and $text) {
+            $padded = [regex]::Replace($padded, '(' + [regex]::Escape($term) + ')',
+                "$($t.SelBg)$($t.White)" + '$1' + "$($t.Reset)$($t.Bg)$color", 'IgnoreCase')
+        }
+        $rows += "$color$padded$bar"
     }
     $rows
 }
@@ -1236,6 +1284,7 @@ function Get-TuiHelpRows {
         @('x / X', 'kill the running script / clear the run queue'),
         @('y / c', 'copy output to clipboard / clear the output panel'),
         @('/', 'filter the script list (live, esc restores)'),
+        @('ctrl+f', 'search the output — n / N jump to next / prev match'),
         @('g / G', 'jump to the top / bottom of the list'),
         @('j / k', 'navigate the list (vim-style)'),
         @('tab', 'switch pane focus — j/k/g/G scroll the focused pane'),

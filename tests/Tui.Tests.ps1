@@ -233,6 +233,40 @@ Describe 'scrolled-back indicator' {
     }
 }
 
+Describe 'output search' {
+    It 'jumps between matches with wrap-around and centers them' {
+        $r = & $script:tui {
+            $script:S.Wrapped.Clear()
+            0..99 | ForEach-Object { $script:S.Wrapped.Add($(if ($_ -in 30, 60) { "has NEEDLE here" } else { "line $_" })) }
+            $script:S.SearchTerm = 'needle'
+            $script:S.Follow = $false; $script:S.Scroll = 0
+            $scrolls = @()
+            1..3 | ForEach-Object { Move-TuiSearch 1; $scrolls += $script:S.Scroll }
+            $script:S.SearchTerm = ''; $script:S.Wrapped.Clear()
+            $script:S.Scroll = 0; $script:S.Follow = $true
+            $scrolls
+        }
+        # body height is 25 (H=30) → matches centered at target-12
+        $r[0] | Should -Be 18   # line 30
+        $r[1] | Should -Be 48   # line 60
+        $r[2] | Should -Be 18   # wraps back to line 30
+    }
+
+    It 'highlights matches in the rendered rows' {
+        $hasHl = & $script:tui {
+            $script:S.Lines.Clear(); $script:S.Wrapped.Clear()
+            Add-TuiOutput @('the needle is here')
+            $script:S.SearchTerm = 'NEEDLE'
+            $t = Get-PssTheme
+            $rows = Get-TuiOutputRows -Count 3 -Width 40
+            $r = $rows[0].Contains("$($t.SelBg)$($t.White)needle")
+            $script:S.SearchTerm = ''; $script:S.Lines.Clear(); $script:S.Wrapped.Clear()
+            $r
+        }
+        $hasHl | Should -BeTrue
+    }
+}
+
 Describe 'pane focus' {
     It 'tab toggles focus and j scrolls the output pane when focused' {
         $r = & $script:tui {

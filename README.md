@@ -41,6 +41,7 @@ Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/d
 | `y` | copy the whole output to the clipboard |
 | `c` | clear output panel |
 | `/` | filter the script list (live as you type; `esc` restores) |
+| `Ctrl+F` | search the output panel (case-insensitive, matches highlighted); `n` / `N` jump to the next / previous match, empty search clears |
 | `?` | help overlay with all keybindings |
 | `PgUp` / `PgDn` / `Home` / `End` | scroll output (scrollbar shows position; auto-follows new output until you scroll up, `End` re-engages follow) |
 | mouse | wheel scrolls the output panel, click selects a script; clicking a device-login code (e.g. Microsoft device sign-in) in the output copies it to the clipboard |
