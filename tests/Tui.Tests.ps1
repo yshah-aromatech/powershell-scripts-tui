@@ -132,6 +132,78 @@ Describe 'list rows' {
     }
 }
 
+Describe 'detail rows' {
+    It 'renders the requested number of rows at the pane width' {
+        $rows = & $script:tui { $script:S.Selected = 0; Get-TuiDetailRows -Count 8 -Width 30 }
+        $rows.Count | Should -Be 8
+        foreach ($r in $rows) {
+            $plain = [regex]::Replace($r, "`e\[[0-9;]*m", '')
+            Get-PssDisplayWidth $plain | Should -Be 30
+        }
+    }
+
+    It 'shows name, entry, schedule and last status for the highlighted script' {
+        $plain = (& $script:tui { $script:S.Selected = 0; Get-TuiDetailRows -Count 8 -Width 34 }) |
+            ForEach-Object { [regex]::Replace($_, "`e\[[0-9;]*m", '') }
+        $text = $plain -join "`n"
+        $text | Should -Match 'alpha'
+        $text | Should -Match 'entry:'
+        $text | Should -Match ([regex]::Escape('*/15'))
+        $text | Should -Match '✓ success'
+        $text | Should -Match '2h'
+    }
+
+    It 'says never run when there is no history for the script' {
+        $plain = (& $script:tui { $script:S.Selected = 1; $r = Get-TuiDetailRows -Count 8 -Width 34; $script:S.Selected = 0; $r }) |
+            ForEach-Object { [regex]::Replace($_, "`e\[[0-9;]*m", '') }
+        ($plain -join "`n") | Should -Match 'never run'
+    }
+
+    It 'shows cpu/mem and start time when the last run recorded resources' {
+        $rows = & $script:tui {
+            $old = $script:S.Statuses['alpha']
+            $script:S.Statuses['alpha'] = [pscustomobject]@{
+                Status = 'success'; At = (Get-Date).AddMinutes(-5); DurationSec = 3
+                Resources = [pscustomobject]@{ cpuAvgPercent = 1.5; cpuMaxPercent = 12; memAvgMb = 40; memMaxMb = 61 }
+            }
+            $r = Get-TuiDetailRows -Count 8 -Width 40
+            $script:S.Statuses['alpha'] = $old
+            $r
+        }
+        $text = ($rows | ForEach-Object { [regex]::Replace($_, "`e\[[0-9;]*m", '') }) -join "`n"
+        $text | Should -Match 'cpu:\s+avg 1\.5% · max 12%'
+        $text | Should -Match 'mem:\s+avg 40MB · max 61MB'
+        $text | Should -Match 'at:'
+    }
+
+    It 'renders a placeholder when no script is selected' {
+        $rows = & $script:tui {
+            $old = $script:S.Visible
+            $script:S.Visible = @()
+            $r = Get-TuiDetailRows -Count 8 -Width 30
+            $script:S.Visible = $old
+            $r
+        }
+        $plain = [regex]::Replace($rows[0], "`e\[[0-9;]*m", '')
+        $plain | Should -Match 'no script selected'
+    }
+
+    It 'splits the body into list + separator + card, and hides the card when short' {
+        $tall = & $script:tui { @((Get-TuiListHeight), (Get-TuiDetailHeight), (Get-TuiBodyHeight)) }
+        $tall[1] | Should -Be 8
+        ($tall[0] + 1 + $tall[1]) | Should -Be $tall[2]
+        $short = & $script:tui {
+            $oldH = $script:S.H
+            $script:S.H = 15
+            $r = @((Get-TuiListHeight), (Get-TuiDetailHeight), (Get-TuiBodyHeight))
+            $script:S.H = $oldH
+            $r
+        }
+        $short[1] | Should -Be 0
+        $short[0] | Should -Be $short[2]
+    }
+}
+
 Describe 'output wrapping' {
     It 'wraps at word boundaries' {
         $wrapped = & $script:tui {

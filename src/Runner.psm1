@@ -520,7 +520,8 @@ function Get-PssHistory {
 }
 
 function Get-PssLastStatuses {
-    # script name -> @{ Status; At (finish [datetime], local); DurationSec } of the most recent run
+    # script name -> @{ Status; At (finish [datetime], local); DurationSec;
+    # Resources (cpu/mem stats of that run) } of the most recent run
     $map = @{}
     foreach ($h in (Get-PssHistory -Last 500)) {
         if (-not $h -or -not $h.script) { continue }
@@ -530,6 +531,7 @@ function Get-PssLastStatuses {
             Status      = "$($h.status)"
             At          = $at
             DurationSec = [double]$h.durationSec
+            Resources   = $h.resources
         }
     }
     $map

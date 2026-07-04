@@ -1,7 +1,8 @@
 # Tui.psm1 — the Night Owl themed terminal UI.
 # Layout mirrors python-scripts-tui: header bar, script list (left) with
-# status badges, live output panel (right) with scrollbar + sticky follow,
-# status line and keybinding footer.
+# status badges and a details card for the highlighted script beneath it,
+# live output panel (right) with scrollbar + sticky follow, status line and
+# keybinding footer.
 
 $script:S = $null          # UI state
 $script:SpinnerFrames = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
@@ -23,6 +24,7 @@ function Start-PssTui {
         Statuses     = @{}
         Schedules    = @{}
         NextRunCache = @{}
+        EnvCountCache = @{}
         LastSync     = $null
         Lines        = [System.Collections.Generic.List[string]]::new()
         Wrapped      = [System.Collections.Generic.List[string]]::new()
@@ -181,8 +183,10 @@ function Invoke-TuiMouse {
         $row = $Y - 3
         if ($row -lt 0 -or $row -ge (Get-TuiBodyHeight)) { return }
         if ($X -le ($lw + 1)) {
-            # list pane: select that row (and focus the pane)
+            # list pane: select that row (and focus the pane); clicks on the
+            # details card / its separator select nothing
             $script:S.FocusPane = 'list'
+            if ($row -ge (Get-TuiListHeight)) { return }
             $idx = $script:S.ListTop + $row
             if ($idx -lt $script:S.Visible.Count) { $script:S.Selected = $idx }
         }
@@ -406,6 +410,7 @@ function Update-TuiRun {
                 Status      = $result.status
                 At          = (Get-Date)
                 DurationSec = [double]$result.durationSec
+                Resources   = $result.resources
             }
             Set-TuiStatus "$($result.script): $($result.status)" -Kind $(if ($result.status -eq 'success') { 'ok' } else { 'err' })
         } else {
@@ -1023,6 +1028,18 @@ function Get-TuiBodyHeight {
     [Math]::Max(3, $script:S.H - 5)   # header + top/bottom borders + status + keys
 }
 
+# details card at the bottom of the list pane — content lines only (the
+# separator row is extra); 0 when the terminal is too short to spare the rows
+function Get-TuiDetailHeight {
+    if ((Get-TuiBodyHeight) -ge 14) { 8 } else { 0 }
+}
+
+# list rows above the details card (the full body when the card is hidden)
+function Get-TuiListHeight {
+    $dh = Get-TuiDetailHeight
+    if ($dh -gt 0) { (Get-TuiBodyHeight) - $dh - 1 } else { Get-TuiBodyHeight }
+}
+
 function Format-TuiPad {
     # display-cell aware pad/truncate (wide chars are 2 cells)
     param([string]$Text, [int]$Width)
@@ -1083,12 +1100,25 @@ function Show-TuiFrame {
     [void]$sb.Append("╮$reset`e[K`n")
 
     # ---- body rows ----------------------------------------------------------
-    $leftRows = Get-TuiListRows -Count $body -Width $lw
+    # left column = script list, then (height permitting) a separator and the
+    # details card for the highlighted script; the output pane spans the full body
+    $detailH = Get-TuiDetailHeight
+    $listH = Get-TuiListHeight
+    $leftRows = Get-TuiListRows -Count $listH -Width $lw
+    $detailRows = if ($detailH -gt 0) { Get-TuiDetailRows -Count $detailH -Width $lw } else { @() }
     $rightRows = Get-TuiOutputRows -Count $body -Width $rw
     for ($i = 0; $i -lt $body; $i++) {
-        [void]$sb.Append("$reset$($t.Muted)│$reset")
-        [void]$sb.Append($leftRows[$i])
-        [void]$sb.Append("$reset$($t.Muted)│$reset")
+        if ($detailH -gt 0 -and $i -eq $listH) {
+            # left-only horizontal rule with an inset title, top-border style
+            $dTitle = ' details '
+            [void]$sb.Append("$reset$($t.Muted)├$($t.Blue)$dTitle$($t.Muted)")
+            [void]$sb.Append(('─' * [Math]::Max(0, $lw - $dTitle.Length)))
+            [void]$sb.Append("┤$reset")
+        } else {
+            [void]$sb.Append("$reset$($t.Muted)│$reset")
+            [void]$sb.Append($(if ($i -lt $listH) { $leftRows[$i] } else { $detailRows[$i - $listH - 1] }))
+            [void]$sb.Append("$reset$($t.Muted)│$reset")
+        }
         [void]$sb.Append($rightRows[$i])
         [void]$sb.Append("$reset$($t.Muted)│$reset`e[K`n")
     }
@@ -1186,6 +1216,78 @@ function Get-TuiListRows {
         }
         $rows += "$rowBg$lead$badge$rowBg $rowFg$name$nameEnd$ageCol$rowBg $sched$rowBg "
     }
+    $rows
+}
+
+# .env var count for the details card — cached on file mtime so redraws
+# during a run (every tick) don't re-read the file
+function Get-TuiEnvVarCount {
+    param($Script)
+    if (-not $Script.EnvFile -or -not (Test-Path $Script.EnvFile)) { return 0 }
+    if (-not $script:S.ContainsKey('EnvCountCache')) { $script:S.EnvCountCache = @{} }
+    $mt = (Get-Item $Script.EnvFile).LastWriteTime
+    $c = $script:S.EnvCountCache[$Script.Name]
+    if ($c -and $c.At -eq $mt) { return $c.N }
+    $n = @((Read-PssEnvFile $Script.EnvFile).Keys).Count
+    $script:S.EnvCountCache[$Script.Name] = @{ At = $mt; N = $n }
+    $n
+}
+
+# bottom-left details card: facts about the highlighted script (mirrors the
+# Details box in python-scripts-tui)
+function Get-TuiDetailRows {
+    param([int]$Count, [int]$Width)
+    $t = Get-PssTheme
+    $sel = Get-TuiSelected
+    $pairs = @()   # label, value, value color ('' label = full-width line)
+    if ($sel) {
+        # entry shown relative to the scripts repo root — the part that varies
+        $entry = "$($sel.Entry)"
+        $root = "$((Get-PssPaths).ScriptsDir)"
+        if ($root -and $entry.StartsWith($root)) { $entry = $entry.Substring($root.Length).TrimStart('/', '\') }
+        else { $entry = $entry.Replace($HOME, '~') }
+        $envN = Get-TuiEnvVarCount -Script $sel
+        $mods = if ($sel.ModuleDir -and (Test-Path $sel.ModuleDir)) { 'mods ✓' } else { 'mods —' }
+        $cron = '—'
+        if ($script:S.Schedules.ContainsKey($sel.Name)) {
+            $expr = $script:S.Schedules[$sel.Name]
+            $cron = "$expr$(Get-TuiNextRunHint -Name $sel.Name -Expression $expr)"
+        }
+        $pairs += , @('', $sel.Name, "$($t.Bold)$($t.White)")
+        $pairs += , @('entry:', $entry, $t.Fg)
+        $pairs += , @('env:', "$(if ($envN -gt 0) { "$envN var(s)" } else { '—' }) · $mods", $t.Fg)
+        $pairs += , @('cron:', $cron, $t.Cyan)
+        $last = if ($script:S.Statuses.ContainsKey($sel.Name)) { $script:S.Statuses[$sel.Name] } else { $null }
+        if ($last) {
+            $statusColor = switch ("$($last.Status)") { 'success' { $t.Green } 'failure' { $t.Red } default { $t.BrYellow } }
+            $icon = switch ("$($last.Status)") {
+                'success' { '✓' } 'failure' { '✗' } 'killed' { '⊘' } 'timeout' { '◷' } 'skipped' { '◇' } default { '·' }
+            }
+            $age = if ($last.At) { " · $(Format-PssRelativeTime ((Get-Date) - $last.At).TotalSeconds) ago" } else { '' }
+            $pairs += , @('last:', "$icon $($last.Status) ($(Format-PssDuration ([double]$last.DurationSec)))$age", $statusColor)
+            $r = $last.Resources   # absent on records from before this field existed
+            if ($r) {
+                $pairs += , @('cpu:', "avg $($r.cpuAvgPercent)% · max $($r.cpuMaxPercent)%", $t.Fg)
+                $pairs += , @('mem:', "avg $($r.memAvgMb)MB · max $($r.memMaxMb)MB", $t.Fg)
+            }
+            if ($last.At) { $pairs += , @('at:', $last.At.ToString('MM-dd HH:mm:ss'), $t.Fg) }
+        } else {
+            $pairs += , @('last:', 'never run', $t.Muted)
+        }
+    } else {
+        $pairs += , @('', 'no script selected', $t.Muted)
+    }
+    $rows = @()
+    foreach ($p in $pairs) {
+        if ($rows.Count -ge $Count) { break }
+        if ($p[0]) {
+            $label = " $($p[0])".PadRight(8)
+            $rows += "$($t.Muted)$label$($p[2])$(Format-TuiPad -Text "$($p[1])" -Width ($Width - 8))"
+        } else {
+            $rows += "$($p[2])$(Format-TuiPad -Text " $($p[1])" -Width $Width)"
+        }
+    }
+    while ($rows.Count -lt $Count) { $rows += (' ' * $Width) }
     $rows
 }
 
