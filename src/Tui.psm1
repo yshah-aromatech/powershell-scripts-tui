@@ -524,7 +524,7 @@ function Invoke-TuiWebhookTest {
 function Open-TuiHistory {
     $items = @(Get-PssHistory -Last 200)
     [array]::Reverse($items)
-    $script:S.History = @{ Items = $items; Sel = 0; FilterName = '' }
+    $script:S.History = @{ Items = $items; Sel = 0; Top = 0; FilterName = '' }
     $script:S.Mode = 'history'
 }
 
@@ -1246,13 +1246,17 @@ function Get-TuiHistoryRows {
     $filterTxt = if ($hi.FilterName) { " · filtered: $($hi.FilterName) (f clears)" } else { '' }
     $rows += "$($t.SelBg)$($t.White)$(Format-TuiPad -Text " run history (newest first)$filterTxt — enter view log · f filter · esc close" -Width $Width)"
 
-    $visible = $Count - 1
+    $fmt = ' {0,-11} {1,4}  {2,-9} {3,-22} {4,8}  cpu {5,5}% {6}  mem {7,7}MB  [{8}]'
+    $rows += "$($t.Muted)$(Format-TuiPad -Text (' {0,-11} {1,4}  {2,-9} {3,-22} {4,8}' -f 'when', 'age', 'status', 'script', 'duration') -Width $Width)"
+
+    $visible = $Count - 2
     $hi.Sel = [Math]::Min($hi.Sel, [Math]::Max(0, $items.Count - 1))
     # keep selection in view
     $top = 0
     if ($items.Count -gt $visible) {
         $top = [Math]::Min([Math]::Max(0, $hi.Sel - [int]($visible / 2)), $items.Count - $visible)
     }
+    $hi.Top = $top   # mouse clicks map row -> item index through this
     for ($i = 0; $i -lt $visible; $i++) {
         $idx = $top + $i
         if ($idx -ge $items.Count) {
@@ -1264,11 +1268,15 @@ function Get-TuiHistoryRows {
         $color = switch ("$($h.status)") {
             'success' { $t.Green } 'failure' { $t.Red } default { $t.BrYellow }
         }
-        $when = "$($h.startedAt)" -replace 'T', ' ' -replace '\.\d+Z$', 'Z'
+        # ConvertFrom-Json turns ISO strings into [datetime] — format both a
+        # compact absolute time and a glanceable age from that
+        $started = $h.startedAt -as [datetime]
+        $when = if ($started) { $started.ToString('MM-dd HH:mm') } else { "$($h.startedAt)" }
+        $age = if ($started) { Format-PssRelativeTime ((Get-Date) - $started).TotalSeconds } else { '' }
         $res = $h.resources
         $spark = Get-TuiSparkline -Series $res.cpuSeries -Width 10
-        $line = ' {0}  {1,-9} {2,-22} {3,8}  cpu {4,5}% {5}  mem {6,7}MB  [{7}]' -f
-        $when, $h.status, $h.script, (Format-PssDuration ([double]$h.durationSec)),
+        $line = $fmt -f
+        $when, $age, $h.status, $h.script, (Format-PssDuration ([double]$h.durationSec)),
         $res.cpuMaxPercent, $spark, $res.memMaxMb, $h.trigger
         $bg = if ($idx -eq $hi.Sel) { $t.SelBg } else { '' }
         $rows += "$bg$color$(Format-TuiPad -Text $line -Width $Width)"

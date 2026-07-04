@@ -132,6 +132,23 @@ Describe 'history rows' {
         $all | Should -Match 'alpha'
         $all | Should -Match '▁|▂|▃|▄|▅|▆|▇|█'
     }
+
+    It 'shows a column header and compact absolute + relative times' {
+        $rows = & $script:tui {
+            $script:S.History = @{
+                Items = @([pscustomobject]@{
+                        script = 'alpha'; status = 'success'; trigger = 'cron'
+                        startedAt = [datetime]::Now.AddHours(-3); durationSec = 4.2
+                        resources = [pscustomobject]@{ cpuMaxPercent = 50; memMaxMb = 100; cpuSeries = @(1, 5) }
+                    })
+                Sel = 0; Top = 0; FilterName = ''
+            }
+            Get-TuiHistoryRows -Count 6 -Width 110
+        }
+        $all = [regex]::Replace(($rows -join "`n"), "`e\[[0-9;]*m", '')
+        $all | Should -Match 'when\s+age\s+status\s+script\s+duration'
+        $all | Should -Match '\d{2}-\d{2} \d{2}:\d{2}\s+3h'
+    }
 }
 
 Describe 'status line' {
