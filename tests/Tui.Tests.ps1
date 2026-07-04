@@ -132,6 +132,29 @@ Describe 'status line' {
     }
 }
 
+Describe 'key hints footer' {
+    It 'shows list keys in list mode' {
+        $line = & $script:tui { $script:S.Mode = 'list'; Get-TuiKeyHints -Width 200 }
+        $plain = [regex]::Replace($line, "`e\[[0-9;]*m", '')
+        $plain | Should -Match 'enter run'
+        $plain | Should -Match 'q quit'
+    }
+
+    It 'shows mode-specific keys in history and env modes' {
+        $hist = & $script:tui { $script:S.Mode = 'history'; Get-TuiKeyHints -Width 200 }
+        [regex]::Replace($hist, "`e\[[0-9;]*m", '') | Should -Match 'view log'
+        $env = & $script:tui { $script:S.Mode = 'env'; Get-TuiKeyHints -Width 200 }
+        [regex]::Replace($env, "`e\[[0-9;]*m", '') | Should -Match 'ctrl\+s save'
+        & $script:tui { $script:S.Mode = 'list' }
+    }
+
+    It 'pads to the requested width' {
+        $line = & $script:tui { $script:S.Mode = 'list'; Get-TuiKeyHints -Width 60 }
+        $plain = [regex]::Replace($line, "`e\[[0-9;]*m", '')
+        $plain.Length | Should -Be 60
+    }
+}
+
 Describe 'sparkline' {
     It 'is empty-safe' {
         (& $script:tui { Get-TuiSparkline -Series @() -Width 5 }).Length | Should -Be 5

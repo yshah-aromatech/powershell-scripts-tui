@@ -1284,11 +1284,37 @@ function Get-TuiNextRunHint {
 function Get-TuiKeyHints {
     param([int]$Width)
     $t = Get-PssTheme
-    $pairs = @(
-        @('enter', 'run'), @('a', 'args'), @('e', 'schedule'), @('v', '.env'), @('s', 'sync'),
-        @('i', 'deps'), @('l', 'lint'), @('u', 'update'), @('h', 'history'), @('x', 'kill'),
-        @('y', 'copy'), @('/', 'filter'), @('?', 'help'), @('q', 'quit')
-    )
+    # footer follows the active mode — showing list keys while e.g. the env
+    # editor is open would advertise bindings that don't work there
+    $pairs = switch ($script:S.Mode) {
+        'history' {
+            @(@('enter', 'view log'), @('f', 'filter script'), @('j/k', 'navigate'),
+                @('pgup/pgdn', 'page'), @('esc', 'close'))
+        }
+        'env' {
+            @(@('ctrl+s', 'save'), @('esc', 'cancel'), @('arrows', 'move'))
+        }
+        'input' {
+            @(@('enter', 'submit'), @('esc', 'cancel'))
+        }
+        'confirm' {
+            @(@('y/enter', 'confirm'), @('n/esc', 'cancel'))
+        }
+        'deps' {
+            $alt = if ($script:S.Deps -and $script:S.Deps.InstallOnly) { 'skip' } else { 'run anyway' }
+            @(@('y', 'install'), @('n', $alt), @('esc', 'cancel'))
+        }
+        'help' {
+            @(@('any key', 'close help'))
+        }
+        default {
+            @(
+                @('enter', 'run'), @('a', 'args'), @('e', 'schedule'), @('v', '.env'), @('s', 'sync'),
+                @('i', 'deps'), @('l', 'lint'), @('u', 'update'), @('h', 'history'), @('x', 'kill'),
+                @('y', 'copy'), @('/', 'filter'), @('?', 'help'), @('q', 'quit')
+            )
+        }
+    }
     $out = ' '
     $plain = ' '
     foreach ($p in $pairs) {
