@@ -1011,7 +1011,9 @@ function Show-TuiFrame {
     $bg = $t.Bg; $fg = $t.Fg; $reset = "$($t.Reset)$bg$fg"
 
     # ---- header -----------------------------------------------------------
-    $title = ' PowerShell Scripts TUI '
+    # chip-style: only the title carries the accent fill; the rest of the
+    # line is transparent with the repo/host info kept muted on the right
+    $title = ' psscripts '
     $repoUrl = Get-PssScriptsRepo
     $repo = if ($repoUrl) { ($repoUrl -replace '^https://(x-access-token:[^@]+@)?', '') } else { 'no scripts repo configured' }
     $ver = if ($script:S.AppVersion) { " · $($script:S.AppVersion)" } else { '' }
@@ -1024,7 +1026,8 @@ function Show-TuiFrame {
         $right = Format-TuiPad -Text $right -Width ([Math]::Max(0, $W - $title.Length))
     }
     $mid = [Math]::Max(0, $W - $title.Length - $right.Length)
-    [void]$sb.Append("$($t.BlueBg)$($t.BlackFg)$($t.Bold)$title$(' ' * $mid)$right$($t.Reset)")
+    [void]$sb.Append("$($t.BlueBg)$($t.BlackFg)$($t.Bold)$title$($t.Reset)$bg$fg")
+    [void]$sb.Append("$(' ' * $mid)$($t.Muted)$right")
     [void]$sb.Append("$reset`e[K`n")
 
     # ---- panel top border --------------------------------------------------
