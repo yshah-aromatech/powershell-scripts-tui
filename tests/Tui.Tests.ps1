@@ -132,6 +132,38 @@ Describe 'status line' {
     }
 }
 
+Describe 'scrolled-back indicator' {
+    It 'counts lines below the viewport only when not following' {
+        $counts = & $script:tui {
+            $script:S.Wrapped.Clear()
+            1..50 | ForEach-Object { $script:S.Wrapped.Add("line $_") }
+            $script:S.Scroll = 10
+            $script:S.Follow = $false
+            $notFollowing = Get-TuiMoreBelow -BodyHeight 20
+            $script:S.Follow = $true
+            $following = Get-TuiMoreBelow -BodyHeight 20
+            $script:S.Wrapped.Clear(); $script:S.Scroll = 0
+            @($notFollowing, $following)
+        }
+        $counts[0] | Should -Be 20
+        $counts[1] | Should -Be 0
+    }
+
+    It 'is zero when the right pane is not showing output' {
+        $n = & $script:tui {
+            $script:S.Wrapped.Clear()
+            1..50 | ForEach-Object { $script:S.Wrapped.Add("line $_") }
+            $script:S.Follow = $false
+            $script:S.Mode = 'history'
+            $r = Get-TuiMoreBelow -BodyHeight 20
+            $script:S.Mode = 'list'; $script:S.Follow = $true
+            $script:S.Wrapped.Clear(); $script:S.Scroll = 0
+            $r
+        }
+        $n | Should -Be 0
+    }
+}
+
 Describe 'key hints footer' {
     It 'shows list keys in list mode' {
         $line = & $script:tui { $script:S.Mode = 'list'; Get-TuiKeyHints -Width 200 }

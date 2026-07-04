@@ -961,7 +961,13 @@ function Show-TuiFrame {
     }
 
     # ---- bottom border -----------------------------------------------------
-    [void]$sb.Append("$reset$($t.Muted)└$('─' * $lw)┴$('─' * $rw)┘$reset`e[K`n")
+    # scrolled back? say so — new output otherwise accumulates invisibly below
+    $more = Get-TuiMoreBelow -BodyHeight $body
+    $note = if ($more -gt 0) { " ▼ $more more — End follows " } else { '' }
+    if ($note -and ($note.Length + 2) -gt $rw) { $note = '' }
+    [void]$sb.Append("$reset$($t.Muted)└$('─' * $lw)┴$('─' * ($rw - $note.Length - $(if ($note) { 1 } else { 0 })))")
+    if ($note) { [void]$sb.Append("$($t.BrYellow)$note$($t.Muted)─") }
+    [void]$sb.Append("┘$reset`e[K`n")
 
     # ---- status line -------------------------------------------------------
     [void]$sb.Append($reset)
@@ -1027,6 +1033,14 @@ function Get-TuiListRows {
         $rows += "$rowBg $badge$rowBg $rowFg$name$rowBg$ageCol$rowBg $sched$rowBg "
     }
     $rows
+}
+
+# wrapped output lines below the current viewport; 0 while following or when
+# the right pane isn't showing the output buffer
+function Get-TuiMoreBelow {
+    param([int]$BodyHeight)
+    if ($script:S.Follow -or $script:S.Mode -in 'env', 'history', 'help') { return 0 }
+    [Math]::Max(0, $script:S.Wrapped.Count - ($script:S.Scroll + $BodyHeight))
 }
 
 function Get-TuiOutputRows {
