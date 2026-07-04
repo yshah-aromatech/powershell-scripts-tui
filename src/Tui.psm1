@@ -23,6 +23,7 @@ function Start-PssTui {
         Statuses     = @{}
         Schedules    = @{}
         NextRunCache = @{}
+        LastSync     = $null
         Lines        = [System.Collections.Generic.List[string]]::new()
         Wrapped      = [System.Collections.Generic.List[string]]::new()
         WrapWidth    = 0
@@ -211,6 +212,7 @@ function Update-TuiScripts {
     $script:S.Scripts = @(Get-PssScripts)
     $script:S.Statuses = Get-PssLastStatuses
     $script:S.Schedules = Get-PssSchedules
+    $script:S.LastSync = Get-PssLastSyncTime
     Update-TuiVisible
 }
 
@@ -988,7 +990,11 @@ function Show-TuiFrame {
     $repoUrl = Get-PssScriptsRepo
     $repo = if ($repoUrl) { ($repoUrl -replace '^https://(x-access-token:[^@]+@)?', '') } else { 'no scripts repo configured' }
     $ver = if ($script:S.AppVersion) { " · $($script:S.AppVersion)" } else { '' }
-    $right = " $repo · $([Environment]::MachineName)$ver "
+    $sync = ''
+    if ($script:S.ContainsKey('LastSync') -and $script:S.LastSync) {
+        $sync = " · synced $(Format-PssRelativeTime ((Get-Date) - $script:S.LastSync).TotalSeconds) ago"
+    }
+    $right = " $repo$sync · $([Environment]::MachineName)$ver "
     if ($title.Length + $right.Length -gt $W) {
         $right = Format-TuiPad -Text $right -Width ([Math]::Max(0, $W - $title.Length))
     }

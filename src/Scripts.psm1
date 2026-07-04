@@ -60,6 +60,17 @@ function Sync-PssRepo {
     $ok
 }
 
+# When the scripts clone was last synced: FETCH_HEAD is touched by every
+# fetch; a fresh clone (no fetch yet) falls back to the .git dir itself.
+# Reflects syncs from any process (TUI, --sync, cron), not just this one.
+function Get-PssLastSyncTime {
+    $dir = (Get-PssPaths).ScriptsDir
+    foreach ($p in (Join-Path $dir '.git/FETCH_HEAD'), (Join-Path $dir '.git')) {
+        if (Test-Path $p) { return (Get-Item $p).LastWriteTime }
+    }
+    $null
+}
+
 # ---------------------------------------------------------------------------
 # Discovery — one folder per script (entry: script.json "entry", main.ps1,
 # <folder>.ps1 or run.ps1), plus loose .ps1 files in the repo root.
@@ -145,4 +156,4 @@ function Get-PssScripts {
     $scripts
 }
 
-Export-ModuleMember -Function Sync-PssRepo, Get-PssScripts
+Export-ModuleMember -Function Sync-PssRepo, Get-PssScripts, Get-PssLastSyncTime

@@ -68,3 +68,22 @@ Describe 'Get-PssScripts discovery' {
         @(Get-PssScripts).Count | Should -Be 0
     }
 }
+
+Describe 'Get-PssLastSyncTime' {
+    It 'is null when the clone does not exist yet' {
+        Remove-Item (Join-Path $script:root '.git') -Recurse -Force -ErrorAction SilentlyContinue
+        Get-PssLastSyncTime | Should -Be $null
+    }
+
+    It 'uses FETCH_HEAD mtime when present' {
+        $git = Join-Path $script:root '.git'
+        New-Item -ItemType Directory -Path $git -Force | Out-Null
+        $fh = Join-Path $git 'FETCH_HEAD'
+        'x' | Set-Content $fh
+        $stamp = (Get-Date).AddMinutes(-42)
+        (Get-Item $fh).LastWriteTime = $stamp
+        $got = Get-PssLastSyncTime
+        [Math]::Abs(($got - $stamp).TotalSeconds) | Should -BeLessThan 2
+        Remove-Item $git -Recurse -Force
+    }
+}
