@@ -73,14 +73,18 @@ function Start-PssTui {
                 $script:S.Dirty = $true
             }
 
-            # input
+            # input — an error in a key handler/callback must not crash the TUI
             while ([Console]::KeyAvailable) {
                 $key = [Console]::ReadKey($true)
-                if ($key.Key -eq [ConsoleKey]::Escape -and [Console]::KeyAvailable) {
-                    # escape sequence the runtime didn't parse (mouse, focus, …)
-                    Read-TuiEscapeSequence -EscKey $key
-                } else {
-                    Invoke-TuiKey $key
+                try {
+                    if ($key.Key -eq [ConsoleKey]::Escape -and [Console]::KeyAvailable) {
+                        # escape sequence the runtime didn't parse (mouse, focus, …)
+                        Read-TuiEscapeSequence -EscKey $key
+                    } else {
+                        Invoke-TuiKey $key
+                    }
+                } catch {
+                    Set-TuiStatus "error: $($_.Exception.Message)" -Kind err
                 }
                 $script:S.Dirty = $true
                 if ($script:S.Quit) { break }
@@ -507,8 +511,13 @@ function Invoke-TuiInstallDeps {
     $cmd = Get-PssInstallCommand -Script $d.Script -Modules $d.Missing
     $after = $null
     if (-not $d.InstallOnly) {
-        $target = $d.Script; $extra = $d.ExtraArgs
-        $after = { Start-TuiRun -Script $target -ExtraArgs $extra }.GetNewClosure()
+        # captured via state, not .GetNewClosure() — see Open-TuiConfirm
+        $script:S.PendingRun = @{ Script = $d.Script; ExtraArgs = $d.ExtraArgs }
+        $after = {
+            $p = $script:S.PendingRun
+            $script:S.PendingRun = $null
+            if ($p) { Start-TuiRun -Script $p.Script -ExtraArgs $p.ExtraArgs }
+        }
     }
     Start-TuiTask -Name "install deps: $($d.Script.Name)" -FileName ([string]$cfg.pwshBin) `
         -Arguments @('-NoProfile', '-NonInteractive', '-Command', $cmd) -After $after
@@ -617,13 +626,13 @@ function Open-TuiCronInput {
         }
         $conv = Convert-PssToCron -Text $value
         if (-not $conv.Expression) { Set-TuiStatus "cron: $($conv.Error)" -Kind err; return }
-        $expr = $conv.Expression
-        $name = $sel2.Name
-        Open-TuiConfirm -Message "schedule '$name' as:  $expr  ?" -OnYes {
-            if (Set-PssSchedule -Name $name -Expression $expr) { Set-TuiStatus "scheduled $name : $expr" -Kind ok }
+        Open-TuiConfirm -Message "schedule '$($sel2.Name)' as:  $($conv.Expression)  ?" `
+            -Data @{ Name = $sel2.Name; Expr = $conv.Expression } -OnYes {
+            param($d)
+            if (Set-PssSchedule -Name $d.Name -Expression $d.Expr) { Set-TuiStatus "scheduled $($d.Name) : $($d.Expr)" -Kind ok }
             else { Set-TuiStatus 'failed to update crontab' -Kind err }
             $script:S.Schedules = Get-PssSchedules
-        }.GetNewClosure()
+        }
     }
 }
 
@@ -633,9 +642,13 @@ function Open-TuiInput {
     $script:S.Mode = 'input'
 }
 
+# $Data is passed to OnYes as its first argument. Capture values this way, NOT
+# via .GetNewClosure(): a closure rebinds the scriptblock to a new dynamic
+# module where this module's internal functions (Set-TuiStatus, Start-TuiRun,
+# …) no longer resolve — 'Set-TuiStatus is not recognized' at confirm time.
 function Open-TuiConfirm {
-    param([string]$Message, [scriptblock]$OnYes)
-    $script:S.Confirm = @{ Message = $Message; OnYes = $OnYes }
+    param([string]$Message, [scriptblock]$OnYes, $Data = $null)
+    $script:S.Confirm = @{ Message = $Message; OnYes = $OnYes; Data = $Data }
     $script:S.Mode = 'confirm'
 }
 
@@ -820,7 +833,7 @@ function Invoke-TuiKeyConfirm {
     }
     if ($Key.KeyChar -eq 'y' -or $Key.Key -eq 'Enter') {
         $c = $script:S.Confirm; $script:S.Confirm = $null; $script:S.Mode = 'list'
-        if ($c.OnYes) { & $c.OnYes }
+        if ($c.OnYes) { & $c.OnYes $c.Data }
     }
 }
 

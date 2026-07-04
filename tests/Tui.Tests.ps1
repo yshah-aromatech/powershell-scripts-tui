@@ -41,6 +41,41 @@ AfterAll {
     Remove-Item $script:appDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Describe 'cron schedule flow' {
+    It 'confirm callback resolves module-internal functions (GetNewClosure scope regression)' {
+        # a .GetNewClosure() OnYes rebinds to a dynamic module where internal
+        # functions like Set-TuiStatus do not resolve — this drives e → enter → y
+        Mock -ModuleName Tui Set-PssSchedule { $true }
+        Mock -ModuleName Tui Get-PssSchedules { @{} }
+        $r = & $script:tui {
+            $script:S.Mode = 'list'; $script:S.Selected = 0; $script:S.StatusMsg = ''
+            Open-TuiCronInput
+            & $script:S.Input.OnSubmit '*/5 * * * *'
+            Invoke-TuiKeyConfirm ([ConsoleKeyInfo]::new('y', [ConsoleKey]::Y, $false, $false, $false))
+            $res = @($script:S.Mode, $script:S.StatusMsg)
+            $script:S.Input = $null; $script:S.Confirm = $null
+            $script:S.Mode = 'list'; $script:S.StatusMsg = ''
+            $script:S.Schedules = @{ alpha = '*/15 * * * *' }
+            $res
+        }
+        $r[0] | Should -Be 'list'
+        $r[1] | Should -Match ([regex]::Escape('scheduled alpha : */5 * * * *'))
+    }
+
+    It 'install-deps continuation reaches Start-TuiRun without closure scope errors' {
+        Mock -ModuleName Tui Get-PssInstallCommand { 'noop' }
+        Mock -ModuleName Tui Start-TuiTask { $script:CapturedAfter = $After }
+        Mock -ModuleName Tui Start-TuiRun { }
+        & $script:tui {
+            $script:S.Deps = @{ Script = $script:S.Visible[0]; Missing = @(@{ Name = 'Az'; Display = 'Az' }); ExtraArgs = @('-X'); InstallOnly = $false }
+            Invoke-TuiInstallDeps
+        }
+        & $script:CapturedAfter   # what Update-TuiRun does when the install task succeeds
+        Should -Invoke Start-TuiRun -ModuleName Tui -Times 1 -Exactly
+        (& $script:tui { $script:S.PendingRun }) | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'list rows' {
     It 'renders one row per body line at the requested width' {
         $rows = & $script:tui { Get-TuiListRows -Count 5 -Width 30 }
