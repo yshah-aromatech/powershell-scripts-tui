@@ -1081,7 +1081,9 @@ function Get-TuiOutputRows {
         $color = $t.Fg
         if ($text -match '^──|^────') { $color = $t.Blue }
         elseif ($text -match '^WARNING:') { $color = $t.Muted }   # advisory noise — keep it quiet
-        elseif ($text -match 'FAILED|failed|error|Error|exception|Exception') { $color = $t.Red }
+        # whole words only, no hyphenated names: "ErrorAction", "0 errors" and
+        # a script called "error-report" must not paint the line red
+        elseif ($text -match '(?i)\b(error|exception|failed|failure|fatal)\b(?!-)') { $color = $t.Red }
         elseif ($text -match ': success ') { $color = $t.Green }
         $bar = if ($thumbPos -ge 0) {
             if ($i -ge $thumbPos -and $i -lt ($thumbPos + $thumbLen)) { "$($t.Blue)█" } else { "$($t.Muted)│" }

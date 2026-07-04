@@ -176,6 +176,31 @@ Describe 'status line' {
     }
 }
 
+Describe 'output row coloring' {
+    It 'paints real errors red but not lookalikes' {
+        $flags = & $script:tui {
+            $script:S.Lines.Clear(); $script:S.Wrapped.Clear()
+            Add-TuiOutput @(
+                'ERROR: something broke',
+                'Unhandled exception at line 3',
+                'found 0 errors in 12 files',
+                'Invoke-Thing -ErrorAction Stop',
+                'running error-report'
+            )
+            $t = Get-PssTheme
+            $rows = Get-TuiOutputRows -Count 5 -Width 60
+            $r = @($rows | ForEach-Object { $_.StartsWith($t.Red) })
+            $script:S.Lines.Clear(); $script:S.Wrapped.Clear(); $script:S.Follow = $true
+            $r
+        }
+        $flags[0] | Should -BeTrue    # ERROR: ...
+        $flags[1] | Should -BeTrue    # exception
+        $flags[2] | Should -BeFalse   # 0 errors
+        $flags[3] | Should -BeFalse   # -ErrorAction
+        $flags[4] | Should -BeFalse   # error-report (script name)
+    }
+}
+
 Describe 'scrolled-back indicator' {
     It 'counts lines below the viewport only when not following' {
         $counts = & $script:tui {
