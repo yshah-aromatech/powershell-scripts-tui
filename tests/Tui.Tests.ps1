@@ -145,6 +145,17 @@ Describe 'status line' {
         }
         [regex]::Replace($line, "`e\[[0-9;]*m", '') | Should -Match '\+1 queued'
     }
+
+    It 'shows elapsed time for a running task' {
+        $line = & $script:tui {
+            $script:S.Run = @{ Kind = 'task'; Name = 'sync scripts repo'
+                StartedAt = (Get-Date).ToUniversalTime().AddSeconds(-90) }
+            $r = Get-TuiStatusLine -Width 120
+            $script:S.Run = $null
+            $r
+        }
+        [regex]::Replace($line, "`e\[[0-9;]*m", '') | Should -Match 'sync scripts repo\s+1m30s'
+    }
 }
 
 Describe 'scrolled-back indicator' {

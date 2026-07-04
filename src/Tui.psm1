@@ -1272,7 +1272,12 @@ function Get-TuiStatusLine {
         $mem = if ($h.ContainsKey('MemNow')) { '{0:n0}' -f $h.MemNow } else { '—' }
         $left = " running $($h.Name)  $(Format-PssDuration $el)  cpu $cpu%  mem ${mem}MB$queueTxt"
     } elseif ($script:S.Run) {
-        $left = " running: $($script:S.Run.Name)$queueTxt"
+        $h = $script:S.Run
+        $el = ''
+        if ($h.ContainsKey('StartedAt')) {
+            $el = "  $(Format-PssDuration ((Get-Date).ToUniversalTime() - $h.StartedAt).TotalSeconds)"
+        }
+        $left = " running: $($h.Name)$el$queueTxt"
     } elseif (((Get-Date) - $script:S.StatusMsgAt).TotalSeconds -lt 6 -and $script:S.StatusMsg) {
         $left = " $($script:S.StatusMsg)"
     } else {
