@@ -33,6 +33,13 @@ if ! command -v pwsh >/dev/null 2>&1; then
 fi
 say "pwsh: $(pwsh --version)"
 
+# python runtime for python scripts (venvs need python3-venv on Ubuntu)
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -m venv --help >/dev/null 2>&1; then
+  say "installing python3 + venv + pip..."
+  sudo apt-get update -y && sudo apt-get install -y python3 python3-venv python3-pip
+fi
+say "python3: $(python3 --version 2>/dev/null || echo 'not installed')"
+
 # --- locate or fetch the app ------------------------------------------------
 # When run from a checkout, install in place. When piped (curl | bash) there is
 # no source file on disk, so clone (or update) the app first.

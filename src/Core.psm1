@@ -104,6 +104,8 @@ function Get-PssTheme {
 $script:ConfigDefaults = [ordered]@{
     scriptsRepo       = ''
     branch            = 'main'
+    repos             = @()        # multi-repo: [{name, url, branch}] — overrides scriptsRepo/branch
+    pythonBin         = 'python3'  # interpreter used to CREATE venvs (scripts run on the venv's python)
     dataDir           = '~/.psscripts'
     n8nWebhookUrl     = ''
     pwshBin           = 'pwsh'
@@ -192,9 +194,20 @@ function Initialize-Pss {
         HistoryFile = Join-Path $dataDir 'history.jsonl'
     }
     $script:Paths.LocksDir = Join-Path $dataDir 'locks'
+    $script:Paths.VenvsDir = Join-Path $dataDir 'venvs'
     $script:Paths.WebhookQueueFile = Join-Path $dataDir 'webhook-queue.jsonl'
-    foreach ($d in $script:Paths.DataDir, $script:Paths.ModulesDir, $script:Paths.LogsDir, $script:Paths.LocksDir) {
+    foreach ($d in $script:Paths.DataDir, $script:Paths.ModulesDir, $script:Paths.LogsDir, $script:Paths.LocksDir, $script:Paths.VenvsDir) {
         if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    }
+
+    # multi-repo config sanity (the entries themselves are normalized lazily
+    # by Get-PssRepos so env overrides loaded just above apply)
+    foreach ($r in @($cfg.repos)) {
+        if (-not ("$($r.url)")) { $script:ConfigWarnings.Add("config.json: repos entry missing 'url' — skipped") }
+        $rName = "$($r.name)"
+        if ($rName -and $rName -notmatch '^[A-Za-z0-9_-]+$') {
+            $script:ConfigWarnings.Add("config.json: repos entry name '$rName' must match [A-Za-z0-9_-]+ — skipped")
+        }
     }
 
     Clear-PssOldData
@@ -236,6 +249,49 @@ function Get-PssScriptsRepo {
     if ($env:SCRIPTS_REPO) { return [string]$env:SCRIPTS_REPO }
     [string]$script:Config.scriptsRepo
 }
+
+# Normalized repo list: @{ Name; Url; Branch; Root; Legacy }. With `repos`
+# configured, each repo clones into ScriptsDir/<Name>; with only the legacy
+# scriptsRepo/branch keys, the single repo stays at ScriptsDir itself (Legacy)
+# so existing installs keep working with zero migration.
+function Get-PssRepos {
+    $cfg = $script:Config
+    $paths = $script:Paths
+    $repos = [System.Collections.Generic.List[object]]::new()
+
+    $entries = @($cfg.repos)
+    if ($entries.Count -gt 0) {
+        foreach ($e in $entries) {
+            $url = "$($e.url)"
+            if (-not $url) { continue }
+            $name = "$($e.name)"
+            if (-not $name) { $name = ([IO.Path]::GetFileNameWithoutExtension(($url -replace '/+$', ''))) }
+            if ($name -notmatch '^[A-Za-z0-9_-]+$') { continue }
+            $branch = if ("$($e.branch)") { "$($e.branch)" } else { 'main' }
+            $repos.Add([pscustomobject]@{
+                    Name   = $name
+                    Url    = $url
+                    Branch = $branch
+                    Root   = Join-Path $paths.ScriptsDir $name
+                    Legacy = $false
+                })
+        }
+        return $repos
+    }
+
+    # legacy single-repo entry — present even with no URL configured so
+    # discovery still reads a hand-populated ScriptsDir (sync reports the
+    # missing URL itself)
+    $repos.Add([pscustomobject]@{
+            Name   = 'scripts'
+            Url    = (Get-PssScriptsRepo)
+            Branch = [string]$cfg.branch
+            Root   = $paths.ScriptsDir
+            Legacy = $true
+        })
+    $repos
+}
+
 function Get-PssPaths { $script:Paths }
 function Get-PssAppDir { $script:AppDir }
 
@@ -434,7 +490,7 @@ function Copy-PssClipboard {
     'copied via OSC 52'
 }
 
-Export-ModuleMember -Function Initialize-Pss, Get-PssConfig, Get-PssConfigWarnings, Get-PssScriptsRepo,
+Export-ModuleMember -Function Initialize-Pss, Get-PssConfig, Get-PssConfigWarnings, Get-PssScriptsRepo, Get-PssRepos,
 Get-PssPaths, Get-PssAppDir, Get-PssAppVersion, Get-PssTheme, Read-PssEnvFile, Register-PssSecret,
 Hide-PssSecret, Format-PssDuration, Format-PssRelativeTime, Copy-PssClipboard,
 ConvertTo-AnsiFg, ConvertTo-AnsiBg, ConvertTo-Ansi256Index,

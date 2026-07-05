@@ -1,14 +1,15 @@
 # PowerShell Scripts TUI
 
-A terminal UI (pure PowerShell 7, zero other runtime dependencies) for running PowerShell scripts on an Ubuntu server. Scripts live in a private GitHub repo, each gets its own isolated module directory, and every run is reported to an n8n webhook with logs and resource usage.
+A terminal UI (pure PowerShell 7, zero other runtime dependencies) for running **PowerShell and Python** scripts on an Ubuntu server. Scripts live in one or more private GitHub repos, each script gets its own isolated environment (a module directory for PowerShell, a venv for Python), and every run is reported to an n8n webhook with logs and resource usage.
 
 Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/dark/) color scheme.
 
 ## Features
 
 - **Script list with status badges** — synced from your private GitHub scripts repo (✓ success, ✗ failure, ⊘ killed, ◷ timeout, ◇ skipped on last run; `@` marks scheduled scripts; a muted column shows how long ago each script last ran)
-- **One module dir per script** — the PowerShell analog of a venv: each script gets its own folder prepended to `PSModulePath`, created automatically
-- **Automatic dependency detection** — no manifest needed: the script's source is scanned with the PowerShell AST (`#Requires -Modules`, `using module`, `Import-Module` calls; built-in and local modules excluded), compared against what's installed, and you're prompted to install whatever is missing from the PowerShell Gallery (`y` install & run / `n` run anyway / `esc` cancel). Version constraints in `#Requires -Modules @{ModuleName=...; ModuleVersion=...}` are honored at check and install time. Common name mismatches are mapped.
+- **Two runtimes, one pipeline** — folders with a `.ps1` entry run under pwsh with a per-script module dir prepended to `PSModulePath`; folders with a `.py` entry run under a per-script venv (created automatically, `PYTHONUNBUFFERED=1`, cwd = script folder so `python-dotenv` finds `.env` natively). Locks, logs, history, secret redaction, timeouts and the webhook are identical for both. A muted `ps`/`py` tag in the list shows each script's runtime
+- **Multiple script repos** — the `repos` config key syncs any number of repos (e.g. `powershell-scripts` + `python-scripts`) side by side; the legacy single `scriptsRepo` key keeps working unchanged
+- **Automatic dependency detection** — no manifest needed. PowerShell: the source is scanned with the AST (`#Requires -Modules` with version constraints honored, `using module`, `Import-Module` calls; built-in and local modules excluded) and missing modules are installed from the PowerShell Gallery. Python: imports are scanned with the Python AST inside the script's venv (stdlib and local modules excluded), missing packages are pip-installed with common import→pip name mismatches mapped (`cv2`→`opencv-python`, `PIL`→`pillow`, …); a `requirements.txt` in the script folder takes precedence over import scanning. Either way you're prompted (`y` install & run / `n` run anyway / `esc` cancel)
 - **Live output** — stdout/stderr streamed into the TUI (word-wrapped to the panel, wide-character aware, keyboard- and mouse-wheel-scrollable with a scrollbar, sticky-follow) and saved to a timestamped log file per run; `y` copies the whole buffer to your clipboard (wl-copy/xclip/xsel or OSC 52 over SSH)
 - **Resource monitoring** — CPU % and RSS memory sampled across the whole process tree every second via `/proc`; average and peak reported, plus a per-run series that renders as a sparkline in the history view. CPU is relative to the whole machine (all cores = 100%), so a multi-threaded script never reads as >100%
 - **n8n webhook reporting** — success/failure, exit code, duration, avg/max CPU & memory, host, and a log tail POSTed after every run. Delivery is retried, and reports that still can't be delivered are queued on disk and re-sent after the next successful delivery — cron-run reports survive n8n downtime
@@ -32,8 +33,8 @@ Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/d
 | `v` | edit the selected script's `.env` file (`ctrl+s` save, `esc` cancel — warns about unsaved changes) |
 | `s` | sync scripts repo (clone or hard-reset to origin; runs in the background) |
 | `i` | scan the selected script's imports and install missing modules |
-| `l` | lint the selected script with PSScriptAnalyzer |
-| `u` | update PowerShell (apt) + upgrade all script module dirs |
+| `l` | lint the selected script (PSScriptAnalyzer for `.ps1`, pyflakes — auto-installed — for `.py`) |
+| `u` | update PowerShell + Python (apt) + upgrade all module dirs and venvs |
 | `U` | update this app (`git pull --ff-only`; restart to apply) |
 | `h` | run history: `↑`/`↓` select, `Enter` opens that run's log, `r` re-runs that script, `f` filters to the selected script |
 | `t` | send a test event to the n8n webhook |
@@ -86,20 +87,34 @@ cd ~/powershell-scripts-tui && git pull
 
 ## Scripts repo layout
 
-One folder per script:
+One folder per script; PowerShell and Python folders can live in the same repo or in separate repos:
 
 ```
 your-scripts-repo/
 ├── backup-db/
-│   ├── main.ps1        # entry point (see resolution order below)
+│   ├── main.ps1        # PowerShell entry point (see resolution order below)
 │   └── script.json     # optional: {"entry": "...", "description": "...", "args": ["-Flag"], "timeoutMinutes": 30}
-└── cleanup-tmp/
-    └── main.ps1
+└── pull-metrics/
+    ├── main.py         # Python entry point — this folder runs in its own venv
+    └── requirements.txt  # optional: takes precedence over import scanning
 ```
 
-`script.json` keys (all optional): `entry` (relative path to the entry `.ps1`), `description` (shown in the status bar), `args` (default arguments for every run), `timeoutMinutes` (per-script run timeout; overrides the global `runTimeoutMinutes`).
+`script.json` keys (all optional, same for both runtimes): `entry` (relative path to the entry file — its extension decides the runtime), `description` (shown in the status bar), `args` (default arguments for every run), `timeoutMinutes` (per-script run timeout; overrides the global `runTimeoutMinutes`).
 
-The entry point for each folder is resolved in this order: `script.json`'s `"entry"`, then `main.ps1`, `<folder>.ps1`, or `run.ps1` (matched case-insensitively), then — if none of those exist — the only `.ps1` in the folder (or the first alphabetically if there are several). So a folder containing a single arbitrarily-named `.ps1` is detected automatically; use `script.json` `"entry"` to pick a specific file when a folder has more than one. Loose `.ps1` files in the repo root also work. No module manifest needed — dependencies are detected from `#Requires -Modules`, `using module`, and `Import-Module` statements in your code and installed on demand into the script's module dir.
+The entry point for each folder is resolved in this order: `script.json`'s `"entry"`; then the conventional PowerShell names `main.ps1`, `<folder>.ps1`, `run.ps1` (case-insensitive); then the conventional Python names `main.py`, `<folder>.py`, `run.py`, `__main__.py`; then the sole (or first alphabetical) `.ps1`, else `.py`, in the folder. A folder containing both runtimes with no `script.json` resolves to PowerShell — set `"entry"` to disambiguate. Loose `.ps1`/`.py` files in a repo root also work. `__pycache__`, `.venv`, and `node_modules` folders are ignored.
+
+### Multiple repos
+
+To sync more than one scripts repo, replace `scriptsRepo`/`branch` with a `repos` array in `config.json`:
+
+```json
+"repos": [
+  { "name": "powershell", "url": "https://github.com/YOUR_ORG/powershell-scripts" },
+  { "name": "python",     "url": "https://github.com/YOUR_ORG/python-scripts", "branch": "main" }
+]
+```
+
+Each repo clones into `~/.psscripts/scripts/<name>/` (an existing single-repo clone is migrated into its subfolder automatically on the next sync). One `GITHUB_TOKEN` covers all repos — the fine-grained PAT needs Contents:Read on each. Script names must be unique across repos; a duplicate folder name gets qualified as `<repoName>-<folder>` (with a verbose warning) — keep folder names unique to avoid it. With only the legacy `scriptsRepo` key set, everything works exactly as before.
 
 ## Per-script .env files
 
@@ -119,6 +134,8 @@ POSTed as JSON after every run (and `{"event":"test"}` for webhook tests):
 {
   "event": "script_run",
   "script": "backup-db",
+  "runtime": "powershell",
+  "repo": "powershell",
   "trigger": "manual",
   "status": "success",
   "success": true,
@@ -223,7 +240,9 @@ Otherwise the TUI prints the exact commands to run manually (and still upgrades 
 | `branch` | branch to sync | `main` |
 | `dataDir` | where scripts/module dirs/logs/history live | `~/.psscripts` |
 | `n8nWebhookUrl` | n8n webhook endpoint (or set `N8N_WEBHOOK_URL` in `.env`) | — |
-| `pwshBin` | pwsh used to run scripts | `pwsh` |
+| `repos` | array of `{name, url, branch}` scripts repos (overrides `scriptsRepo`/`branch`) | `[]` |
+| `pwshBin` | pwsh used to run PowerShell scripts | `pwsh` |
+| `pythonBin` | python used to create venvs (scripts run on the venv's own python) | `python3` |
 | `monitorIntervalMs` | resource sampling interval | `1000` |
 | `logTailKb` | how much log to include in the webhook | `64` |
 | `runTimeoutMinutes` | kill runs longer than this (0 = no limit; per-script `timeoutMinutes` in `script.json` overrides) | `0` |

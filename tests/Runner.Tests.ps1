@@ -110,3 +110,29 @@ Describe 'webhook dead-letter queue' {
         Send-PssWebhookQueue | Should -Be 0
     }
 }
+
+Describe 'python run pipeline' {
+    It 'runs a python script through the full pipeline' -Skip:(-not (Get-Command python3 -ErrorAction SilentlyContinue)) {
+        $dir = Join-Path $script:appDir 'pyscripts-src'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        "import os`nprint('py out', os.environ.get('PSS_PY_TEST', ''))" | Set-Content (Join-Path $dir 'main.py')
+        $s = [pscustomobject]@{
+            Name = 'pyok'; Dir = $dir; Entry = (Join-Path $dir 'main.py')
+            Runtime = 'python'; Repo = 'pyrepo'
+            Args = @(); EnvFile = (Join-Path $dir '.env')
+            ModuleDir = (Join-Path $dir 'mods'); TimeoutMinutes = 3
+            VenvDir = (Join-Path (Get-PssPaths).VenvsDir 'pyok')
+        }
+        $h = Start-PssRun -Script $s -ExtraEnv @{ PSS_PY_TEST = 'hello-from-env' }
+        $result = Invoke-PssRunToCompletion -Handle $h
+        $result.status | Should -Be 'success'
+        $result.runtime | Should -Be 'python'
+        $result.repo | Should -Be 'pyrepo'
+        # the env value arrived (non-empty output after 'py out') and, being
+        # an ExtraEnv-supplied secret, was redacted in the log
+        $log = Get-Content $result.logFile -Raw
+        $log | Should -Match 'py out \*\*\*'
+        $log | Should -Not -Match 'hello-from-env'
+        Test-Path (Join-Path (Get-PssPaths).LocksDir 'pyok.lock') | Should -BeFalse
+    }
+}

@@ -89,12 +89,28 @@ function Start-PssRun {
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH-mm-ss-fffZ')
     $logFile = Join-Path $paths.LogsDir "$($Script.Name)-$stamp.log"
 
+    $isPython = ($null -ne $Script.PSObject.Properties['Runtime'] -and "$($Script.Runtime)" -eq 'python')
+
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = [string]$cfg.pwshBin
-    [void]$psi.ArgumentList.Add('-NoProfile')
-    [void]$psi.ArgumentList.Add('-NonInteractive')
-    [void]$psi.ArgumentList.Add('-File')
-    [void]$psi.ArgumentList.Add($Script.Entry)
+    if ($isPython) {
+        # ensure the venv exists — the dep-install flow normally creates it,
+        # but a script with no third-party imports never goes through that
+        $venvPy = Get-PssVenvPython -Script $Script
+        if (-not (Test-Path $venvPy)) {
+            & ([string]$cfg.pythonBin) -m venv $Script.VenvDir 2>&1 | Out-Null
+            & $venvPy -m pip install --upgrade pip --quiet 2>&1 | Out-Null
+        }
+        $psi.FileName = $venvPy
+        [void]$psi.ArgumentList.Add($Script.Entry)
+        # line-streaming depends on unbuffered python output
+        $psi.Environment['PYTHONUNBUFFERED'] = '1'
+    } else {
+        $psi.FileName = [string]$cfg.pwshBin
+        [void]$psi.ArgumentList.Add('-NoProfile')
+        [void]$psi.ArgumentList.Add('-NonInteractive')
+        [void]$psi.ArgumentList.Add('-File')
+        [void]$psi.ArgumentList.Add($Script.Entry)
+    }
     foreach ($a in @($Script.Args) + @($ExtraArgs)) { if ("$a") { [void]$psi.ArgumentList.Add("$a") } }
     $psi.WorkingDirectory = $Script.Dir
     $psi.UseShellExecute = $false
@@ -114,12 +130,16 @@ function Start-PssRun {
         $psi.Environment["$($kv.Key)"] = "$($kv.Value)"
         Register-PssSecret -Name "$($kv.Key)" -Value "$($kv.Value)" -Force
     }
-    # per-script module dir gets first crack at module resolution
-    $sep = [IO.Path]::PathSeparator
-    $psi.Environment['PSModulePath'] = "$($Script.ModuleDir)$sep$($env:PSModulePath)"
+    if (-not $isPython) {
+        # per-script module dir gets first crack at module resolution
+        $sep = [IO.Path]::PathSeparator
+        $psi.Environment['PSModulePath'] = "$($Script.ModuleDir)$sep$($env:PSModulePath)"
+    }
 
     $handle = New-PssHandle -Psi $psi -Kind 'run' -Name $Script.Name -Trigger $Trigger -LogFile $logFile
     $handle.LockFile = $lock.File
+    $handle.Runtime = if ($isPython) { 'python' } else { 'powershell' }
+    $handle.Repo = if ($null -ne $Script.PSObject.Properties['Repo']) { "$($Script.Repo)" } else { '' }
     # per-call override wins over the per-script timeout, which wins over the
     # global runTimeoutMinutes
     $handle.TimeoutMinutes = if ($TimeoutOverride -gt 0) {
@@ -411,6 +431,8 @@ function Complete-PssRun {
     $result = [ordered]@{
         event       = 'script_run'
         script      = $Handle.Name
+        runtime     = if ($Handle.ContainsKey('Runtime')) { $Handle.Runtime } else { 'powershell' }
+        repo        = if ($Handle.ContainsKey('Repo')) { $Handle.Repo } else { '' }
         trigger     = $Handle.Trigger
         status      = $Handle.Status
         success     = ($Handle.Status -eq 'success')

@@ -88,7 +88,8 @@ if ($listOnly) {
     foreach ($s in (Get-PssScripts)) {
         $st = if ($statuses.ContainsKey($s.Name)) { $statuses[$s.Name].Status } else { 'never run' }
         $sched = if ($schedules.ContainsKey($s.Name)) { "  [$($schedules[$s.Name])]" } else { '' }
-        '{0,-30} {1,-10}{2}' -f $s.Name, $st, $sched
+        $rt = if ("$($s.Runtime)" -eq 'python') { 'py' } else { 'ps' }
+        '{0,-30} {1,-3} {2,-10}{3}' -f $s.Name, $rt, $st, $sched
     }
     exit 0
 }

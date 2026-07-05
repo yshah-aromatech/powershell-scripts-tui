@@ -100,3 +100,90 @@ Describe 'Get-PssInstallCommand' {
         Remove-Item $s.Dir -Recurse -Force
     }
 }
+
+Describe 'python dependency pipeline' {
+    BeforeAll {
+        # this file has no shared app dir — python deps need config/paths
+        $script:pyAppDir = Join-Path ([IO.Path]::GetTempPath()) "pss-pydeps-tests-$(New-Guid)"
+        New-Item -ItemType Directory -Path $script:pyAppDir -Force | Out-Null
+        @{ dataDir = (Join-Path $script:pyAppDir 'data') } | ConvertTo-Json |
+            Set-Content (Join-Path $script:pyAppDir 'config.json')
+        Initialize-Pss -AppDir $script:pyAppDir
+
+        $script:pyDir = Join-Path $script:pyAppDir 'pyscript'
+        New-Item -ItemType Directory -Path $script:pyDir -Force | Out-Null
+        $script:pyScript = [pscustomobject]@{
+            Name = 'pyscript'; Dir = $script:pyDir
+            Entry = (Join-Path $script:pyDir 'main.py')
+            Runtime = 'python'; Repo = 'scripts'; Args = @()
+            EnvFile = (Join-Path $script:pyDir '.env')
+            ModuleDir = (Join-Path $script:pyAppDir 'data/modules/pyscript')
+            VenvDir = (Join-Path $script:pyAppDir 'data/venvs/pyscript')
+        }
+        $script:hasPython = [bool](Get-Command python3 -ErrorAction SilentlyContinue)
+    }
+    AfterAll {
+        Remove-Item $script:pyAppDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'maps import names to pip names' {
+        Get-PssPipName 'cv2' | Should -Be 'opencv-python'
+        Get-PssPipName 'PIL' | Should -Be 'pillow'
+        Get-PssPipName 'dotenv' | Should -Be 'python-dotenv'
+        Get-PssPipName 'requests' | Should -Be 'requests'
+    }
+
+    It 'parses requirements.txt names, stripping specifiers and comments' {
+        $req = Join-Path $script:pyDir 'requirements.txt'
+        @'
+# comment
+requests>=2.31
+python-dotenv==1.0.0
+pyyaml
+-r other.txt
+msal[broker]>=1.20 ; python_version >= "3.8"
+'@ | Set-Content $req
+        $names = @(Read-PssRequirements -Path $req)
+        $names | Should -Be @('requests', 'python-dotenv', 'pyyaml', 'msal')
+        Remove-Item $req
+    }
+
+    It 'prefers requirements.txt in the install command' {
+        $req = Join-Path $script:pyDir 'requirements.txt'
+        'requests' | Set-Content $req
+        $cmd = Get-PssInstallCommand -Script $script:pyScript -Modules @('whatever')
+        $cmd | Should -Match 'pip install -r'
+        $cmd | Should -Match 'requirements\.txt'
+        Remove-Item $req
+    }
+
+    It 'builds a venv-create + pip install command with mapped names' {
+        $deps = @(New-PssDep -Name 'cv2' | Add-Member -NotePropertyName PipName -NotePropertyValue 'opencv-python' -PassThru)
+        $cmd = Get-PssInstallCommand -Script $script:pyScript -Modules $deps
+        $cmd | Should -Match '-m venv'
+        $cmd | Should -Match "pip install @\('opencv-python'\)"
+        $cmd | Should -Match 'python3-venv'   # failure hint present
+    }
+
+    It 'venv upgrade command iterates venv dirs' {
+        $cmd = Get-PssVenvUpgradeCommand
+        $cmd | Should -Match 'bin/python'
+        $cmd | Should -Match '--outdated'
+    }
+
+    It 'scans imports and reports third-party modules as missing without a venv' -Skip:(-not (Get-Command python3 -ErrorAction SilentlyContinue)) {
+        @'
+import os, sys
+import requests
+from dotenv import load_dotenv
+import localhelper
+'@ | Set-Content (Join-Path $script:pyDir 'main.py')
+        'x = 1' | Set-Content (Join-Path $script:pyDir 'localhelper.py')
+        $missing = @(Get-PssMissingDeps -Script $script:pyScript)
+        ($missing | ForEach-Object Name) | Should -Contain 'requests'
+        ($missing | ForEach-Object Name) | Should -Contain 'dotenv'
+        ($missing | ForEach-Object Name) | Should -Not -Contain 'os'
+        ($missing | ForEach-Object Name) | Should -Not -Contain 'localhelper'
+        ($missing | Where-Object Name -eq 'dotenv').PipName | Should -Be 'python-dotenv'
+    }
+}

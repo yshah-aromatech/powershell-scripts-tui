@@ -1,6 +1,8 @@
-# Deps.psm1 — automatic module dependency detection (PowerShell AST) and
-# per-script module directory management. The PowerShell analog of one venv
-# per script: each script gets its own module dir prepended to PSModulePath.
+# Deps.psm1 — automatic dependency detection and per-script isolation for
+# both runtimes: PowerShell scripts get AST-scanned module deps + a module
+# dir prepended to PSModulePath; Python scripts get import-scanned pip deps
+# + a per-script venv. Get-PssMissingDeps/Get-PssInstallCommand dispatch on
+# Script.Runtime so callers don't care which is which.
 
 # Modules that ship with PowerShell 7 / are always available — never installed.
 $script:BuiltinModules = @(
@@ -195,6 +197,7 @@ function Test-PssDepSatisfied {
 
 function Get-PssMissingDeps {
     param([Parameter(Mandatory)]$Script)
+    if (Test-PssPythonScript $Script) { return @(Get-PssMissingPythonDeps -Script $Script) }
     $deps = @(Get-PssScriptDeps -Script $Script)
     if (-not $deps) { return @() }
     $installed = Get-PssInstalledModules -Script $Script
@@ -209,6 +212,7 @@ function Get-PssInstallCommand {
     # $Modules: dep objects from Get-PssScriptDeps/Get-PssMissingDeps (plain
     # strings also accepted — treated as unversioned names)
     param([Parameter(Mandatory)]$Script, [Parameter(Mandatory)][object[]]$Modules)
+    if (Test-PssPythonScript $Script) { return Get-PssPythonInstallCommand -Script $Script -Deps $Modules }
     if (-not (Test-Path $Script.ModuleDir)) {
         New-Item -ItemType Directory -Path $Script.ModuleDir -Force | Out-Null
     }
@@ -271,5 +275,259 @@ Write-Host 'module upgrade complete'
 "@
 }
 
+# ===========================================================================
+# Python runtime: per-script venvs + import-scanned pip dependencies.
+# Ported from python-scripts-tui (src/lib/imports.ts, venv.ts, system.ts).
+# POSIX-only (venv at <VenvDir>/bin/python), same stance as /proc sampling.
+# ===========================================================================
+
+function Test-PssPythonScript {
+    param($Script)
+    $null -ne $Script.PSObject.Properties['Runtime'] -and "$($Script.Runtime)" -eq 'python'
+}
+
+# Import name -> pip package name, for the common cases where they differ.
+# Anything not in this table is installed under its import name.
+# Carried verbatim from python-scripts-tui — every entry was earned.
+$script:PipNameMap = @{
+    'cv2'         = 'opencv-python'
+    'PIL'         = 'pillow'
+    'sklearn'     = 'scikit-learn'
+    'skimage'     = 'scikit-image'
+    'bs4'         = 'beautifulsoup4'
+    'yaml'        = 'pyyaml'
+    'dotenv'      = 'python-dotenv'
+    'dateutil'    = 'python-dateutil'
+    'Crypto'      = 'pycryptodome'
+    'nacl'        = 'pynacl'
+    'serial'      = 'pyserial'
+    'usb'         = 'pyusb'
+    'psycopg2'    = 'psycopg2-binary'
+    'MySQLdb'     = 'mysqlclient'
+    'git'         = 'GitPython'
+    'github'      = 'PyGithub'
+    'jwt'         = 'PyJWT'
+    'docx'        = 'python-docx'
+    'pptx'        = 'python-pptx'
+    'fitz'        = 'PyMuPDF'
+    'magic'       = 'python-magic'
+    'websocket'   = 'websocket-client'
+    'websockets'  = 'websockets'
+    'telegram'    = 'python-telegram-bot'
+    'kafka'       = 'kafka-python'
+    'zmq'         = 'pyzmq'
+    'OpenSSL'     = 'pyopenssl'
+    'Levenshtein' = 'python-Levenshtein'
+    'gi'          = 'PyGObject'
+    'cairo'       = 'pycairo'
+    'win32api'    = 'pywin32'
+    'attr'        = 'attrs'
+    'google'      = 'google-api-python-client'
+}
+
+function Get-PssPipName {
+    param([string]$Module)
+    if ($script:PipNameMap.ContainsKey($Module)) { $script:PipNameMap[$Module] } else { $Module }
+}
+
+# Python scanner, executed with the script's venv interpreter so importlib
+# reflects exactly what is installed inside that venv. Walks every .py file
+# in the script folder, collects top-level imports via AST, filters stdlib
+# and local modules, then checks availability. Verbatim SCANNER_PY port.
+$script:PythonScanner = @'
+import ast, json, os, sys, importlib.util
+
+script_dir = sys.argv[1]
+stdlib = set(getattr(sys, "stdlib_module_names", set())) | {"__future__"}
+
+local, imports = set(), set()
+for root, dirs, files in os.walk(script_dir):
+    dirs[:] = [d for d in dirs if not d.startswith((".", "__"))]
+    for d in dirs:
+        local.add(d)
+    for f in files:
+        if f.endswith(".py"):
+            local.add(os.path.splitext(f)[0])
+
+for root, dirs, files in os.walk(script_dir):
+    dirs[:] = [d for d in dirs if not d.startswith((".", "__"))]
+    for f in files:
+        if not f.endswith(".py"):
+            continue
+        try:
+            with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                tree = ast.parse(fh.read())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    imports.add(a.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imports.add(node.module.split(".")[0])
+
+third_party = sorted(m for m in imports if m and m not in stdlib and m not in local)
+missing, installed = [], []
+for m in third_party:
+    try:
+        spec = importlib.util.find_spec(m)
+    except (ImportError, ValueError, ModuleNotFoundError):
+        spec = None
+    (installed if spec else missing).append(m)
+
+print(json.dumps({"missing": missing, "installed": installed}))
+'@
+
+function Get-PssVenvPython {
+    param([Parameter(Mandatory)]$Script)
+    Join-Path $Script.VenvDir 'bin/python'
+}
+
+function Test-PssVenv {
+    param([Parameter(Mandatory)]$Script)
+    Test-Path (Get-PssVenvPython -Script $Script)
+}
+
+# Requirements.txt package names (comments/options/version specifiers stripped)
+function Get-PssRequirementsFile {
+    param([Parameter(Mandatory)]$Script)
+    $p = Join-Path $Script.Dir 'requirements.txt'
+    if (Test-Path $p) { $p } else { $null }
+}
+
+function Read-PssRequirements {
+    param([Parameter(Mandatory)][string]$Path)
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in (Get-Content $Path -ErrorAction SilentlyContinue)) {
+        $t = "$line".Trim()
+        if (-not $t -or $t.StartsWith('#') -or $t.StartsWith('-')) { continue }
+        # strip environment markers, extras and version specifiers
+        $name = ($t -split '[;\[<>=!~ ]')[0].Trim()
+        if ($name) { $names.Add($name) }
+    }
+    $names
+}
+
+# Missing python deps as dep objects (Name = import/pip name, PipName = what
+# to install). A missing venv means nothing is installed yet, so everything
+# third-party is missing; the scanner still runs (with the system python) to
+# FIND the imports, its installed/missing split is just ignored then.
+function Get-PssMissingPythonDeps {
+    param([Parameter(Mandatory)]$Script)
+    $cfg = Get-PssConfig
+    $hasVenv = Test-PssVenv -Script $Script
+
+    $reqFile = Get-PssRequirementsFile -Script $Script
+    if ($reqFile) {
+        $wanted = @(Read-PssRequirements -Path $reqFile)
+        if (-not $wanted) { return @() }
+        $have = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        if ($hasVenv) {
+            try {
+                $json = & (Get-PssVenvPython -Script $Script) -m pip list --format=json 2>$null
+                foreach ($p in ("$json" | ConvertFrom-Json)) { [void]$have.Add(("$($p.name)" -replace '_', '-')) }
+            } catch { }
+        }
+        return @($wanted | Where-Object { -not $have.Contains(($_ -replace '_', '-')) } | ForEach-Object {
+                $d = New-PssDep -Name $_
+                $d | Add-Member -NotePropertyName PipName -NotePropertyValue $_ -PassThru
+            })
+    }
+
+    $py = if ($hasVenv) { Get-PssVenvPython -Script $Script } else { [string]$cfg.pythonBin }
+    if (-not (Get-Command $py -ErrorAction SilentlyContinue) -and -not (Test-Path $py)) { return @() }
+    $out = & $py -c $script:PythonScanner $Script.Dir 2>&1
+    if ($LASTEXITCODE -ne 0) { return @() }
+    $last = @($out)[-1]
+    $scan = $null
+    try { $scan = "$last" | ConvertFrom-Json } catch { return @() }
+
+    $missing = if ($hasVenv) { @($scan.missing) } else { @($scan.missing) + @($scan.installed) }
+    @($missing | Sort-Object | ForEach-Object {
+            $pip = Get-PssPipName $_
+            $d = New-PssDep -Name $_
+            if ($pip -ne $_) { $d.Display = "$_ (pip: $pip)" }
+            $d | Add-Member -NotePropertyName PipName -NotePropertyValue $pip -PassThru
+        })
+}
+
+# pwsh -Command string that ensures the venv exists then pip-installs the
+# packages (or requirements.txt when present) — same streamed-task calling
+# convention as the module install command.
+function Get-PssPythonInstallCommand {
+    param([Parameter(Mandatory)]$Script, [object[]]$Deps = @())
+    $cfg = Get-PssConfig
+    $venv = $Script.VenvDir -replace "'", "''"
+    $py = (Get-PssVenvPython -Script $Script) -replace "'", "''"
+    $pythonBin = ([string]$cfg.pythonBin) -replace "'", "''"
+
+    $reqFile = Get-PssRequirementsFile -Script $Script
+    $installLine = if ($reqFile) {
+        "& '$py' -m pip install -r '$($reqFile -replace "'", "''")'"
+    } else {
+        $pkgs = @($Deps | ForEach-Object {
+                if ($_ -is [string]) { Get-PssPipName $_ }
+                elseif ($null -ne $_.PSObject.Properties['PipName']) { [string]$_.PipName }
+                else { Get-PssPipName ([string]$_.Name) }
+            } | Select-Object -Unique)
+        if ($pkgs.Count -eq 0) { 'Write-Host "nothing to install"' }
+        else {
+            $list = ($pkgs | ForEach-Object { "'$($_ -replace "'", "''")'" }) -join ', '
+            "& '$py' -m pip install @($list)"
+        }
+    }
+
+    @"
+`$ErrorActionPreference = 'Continue'
+if (-not (Test-Path '$py')) {
+    Write-Host "creating venv -> $venv"
+    & '$pythonBin' -m venv '$venv'
+    if (`$LASTEXITCODE -ne 0) { Write-Host 'FAILED to create venv (is python3-venv installed?)'; exit 1 }
+    & '$py' -m pip install --upgrade pip --quiet
+}
+$installLine
+if (`$LASTEXITCODE -ne 0) { Write-Host 'pip install FAILED'; exit 1 }
+Write-Host 'python deps installed'
+"@
+}
+
+# pwsh -Command string that upgrades the system pip (PEP 668 aware), then
+# pip + all outdated packages in every script venv (python counterpart of
+# Get-PssModuleUpgradeCommand; port of python-scripts-tui system.ts).
+function Get-PssVenvUpgradeCommand {
+    $paths = Get-PssPaths
+    $cfg = Get-PssConfig
+    $pythonBin = ([string]$cfg.pythonBin) -replace "'", "''"
+    @"
+if (Get-Command '$pythonBin' -ErrorAction SilentlyContinue) {
+    Write-Host 'upgrading system pip...'
+    & '$pythonBin' -m pip install --upgrade pip --quiet 2>&1 | Out-Null
+    if (`$LASTEXITCODE -ne 0) {
+        # Ubuntu 23.04+ PEP 668 managed environment
+        & '$pythonBin' -m pip install --upgrade pip --quiet --break-system-packages 2>&1 | Out-Null
+        Write-Host `$(if (`$LASTEXITCODE -eq 0) { 'system pip upgraded (--break-system-packages)' } else { 'WARNING: system pip upgrade failed (non-fatal)' })
+    } else { Write-Host 'system pip upgraded' }
+}
+`$root = '$($paths.VenvsDir -replace "'", "''")'
+if (-not (Test-Path `$root)) { Write-Host 'no venvs yet'; exit 0 }
+`$venvs = @(Get-ChildItem `$root -Directory | Where-Object { Test-Path (Join-Path `$_.FullName 'bin/python') })
+if (`$venvs.Count -eq 0) { Write-Host 'no venvs to upgrade yet'; exit 0 }
+foreach (`$v in `$venvs) {
+    `$py = Join-Path `$v.FullName 'bin/python'
+    Write-Host "'`$(`$v.Name)': upgrading pip..."
+    & `$py -m pip install --upgrade pip --quiet
+    `$outdated = & `$py -m pip list --outdated --format=json 2>`$null
+    `$pkgs = @()
+    try { `$pkgs = @(("`$outdated" | ConvertFrom-Json) | ForEach-Object name) } catch { }
+    if (`$pkgs.Count -eq 0) { Write-Host "'`$(`$v.Name)': all packages up to date."; continue }
+    Write-Host "'`$(`$v.Name)': upgrading `$(`$pkgs.Count) package(s): `$(`$pkgs -join ', ')"
+    & `$py -m pip install --upgrade @pkgs
+}
+Write-Host 'venv upgrade complete'
+"@
+}
+
 Export-ModuleMember -Function Get-PssScriptDeps, Get-PssMissingDeps, Get-PssInstalledModules,
-Test-PssDepSatisfied, Get-PssInstallCommand, Get-PssModuleUpgradeCommand, New-PssDep
+Test-PssDepSatisfied, Get-PssInstallCommand, Get-PssModuleUpgradeCommand, New-PssDep,
+Test-PssPythonScript, Get-PssPipName, Get-PssVenvPython, Test-PssVenv, Read-PssRequirements,
+Get-PssMissingPythonDeps, Get-PssPythonInstallCommand, Get-PssVenvUpgradeCommand

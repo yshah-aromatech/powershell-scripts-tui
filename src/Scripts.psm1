@@ -1,39 +1,66 @@
-# Scripts.psm1 — scripts repo sync (clone / hard-reset) and script discovery
+# Scripts.psm1 — scripts repo sync (clone / hard-reset) and script discovery.
+# Supports multiple repos (config `repos`) and two runtimes: PowerShell (.ps1)
+# and Python (.py), detected per script from the entry file extension.
+
+# ---------------------------------------------------------------------------
+# One-time layout migration: the legacy layout keeps the single clone at
+# ScriptsDir itself; multi-repo clones live at ScriptsDir/<repoName>. When
+# `repos` is configured and an old root-level clone exists, move it into the
+# subdir of the repo it matches (by remote URL), else the first repo.
+# ---------------------------------------------------------------------------
+function Update-PssRepoLayout {
+    param([scriptblock]$OnOutput = { param($line) })
+    $paths = Get-PssPaths
+    $repos = @(Get-PssRepos)
+    if ($repos.Count -eq 0 -or $repos[0].Legacy) { return }
+    if (-not (Test-Path (Join-Path $paths.ScriptsDir '.git'))) { return }
+
+    $target = $repos[0]
+    $remote = ''
+    try { $remote = "$(git -C $paths.ScriptsDir remote get-url origin 2>$null)" } catch { }
+    $normalize = { param($u) ($u -replace '//[^@/]+@', '//') -replace '\.git/?$', '' -replace '/+$', '' }
+    foreach ($r in $repos) {
+        if ((& $normalize $remote) -eq (& $normalize $r.Url)) { $target = $r; break }
+    }
+
+    & $OnOutput "migrating scripts clone to multi-repo layout: scripts/ -> scripts/$($target.Name)/"
+    $tmp = "$($paths.ScriptsDir).migrating"
+    try {
+        Move-Item -LiteralPath $paths.ScriptsDir -Destination $tmp -Force
+        New-Item -ItemType Directory -Path $paths.ScriptsDir -Force | Out-Null
+        Move-Item -LiteralPath $tmp -Destination (Join-Path $paths.ScriptsDir $target.Name) -Force
+    } catch {
+        & $OnOutput "layout migration FAILED: $($_.Exception.Message) — sync will re-clone instead"
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Repo sync: clone if missing, otherwise hard-reset to origin/<branch>.
 # Local per-script .env files survive the reset/clean.
 # ---------------------------------------------------------------------------
-function Sync-PssRepo {
-    [CmdletBinding()]
-    param([scriptblock]$OnOutput = { param($line) })
-
-    $cfg = Get-PssConfig
-    $paths = Get-PssPaths
+function Sync-PssOneRepo {
+    param(
+        [Parameter(Mandatory)]$Repo,
+        [scriptblock]$OnOutput = { param($line) }
+    )
     $emit = { param($l) & $OnOutput (Hide-PssSecret $l) }
 
-    $repo = Get-PssScriptsRepo
-    if (-not $repo) {
-        & $emit 'scripts repo is not set — set SCRIPTS_REPO in .env or scriptsRepo in config.json'
-        return $false
-    }
-
-    $url = $repo
+    $url = $Repo.Url
     $token = $env:GITHUB_TOKEN
     if ($token -and $url -match '^https://' -and $url -notmatch '@') {
         $url = $url -replace '^https://', "https://x-access-token:$token@"
     }
 
-    $dir = $paths.ScriptsDir
-    $branch = [string]$cfg.branch
+    $dir = $Repo.Root
+    $branch = $Repo.Branch
 
     if (-not (Test-Path (Join-Path $dir '.git'))) {
-        & $emit "cloning $repo (branch $branch)..."
+        & $emit "[$($Repo.Name)] cloning $($Repo.Url) (branch $branch)..."
         $gitOut = git clone --branch $branch $url $dir 2>&1
         foreach ($l in $gitOut) { if ("$l") { & $emit "$l" } }
         $ok = ($LASTEXITCODE -eq 0)
     } else {
-        & $emit "syncing $repo (hard reset to origin/$branch)..."
+        & $emit "[$($Repo.Name)] syncing $($Repo.Url) (hard reset to origin/$branch)..."
         git -C $dir remote set-url origin $url 2>&1 | Out-Null  # refresh token
         # each step's exit code is checked individually — a failed fetch (e.g.
         # expired token) must fail the sync, not be masked by a later step
@@ -41,119 +68,174 @@ function Sync-PssRepo {
             , @('fetch', 'origin')
             , @('checkout', $branch)
             , @('reset', '--hard', "origin/$branch")
-            # clean untracked files but keep local .env files
-            , @('clean', '-fdx', '-e', '.env', '-e', '**/.env')
+            # clean untracked files but keep local .env files and python cruft
+            # that regenerates on every run
+            , @('clean', '-fdx', '-e', '.env', '-e', '**/.env', '-e', '__pycache__', '-e', '*.pyc')
         )
         $ok = $true
         foreach ($step in $steps) {
             $gitOut = git -C $dir @step 2>&1
             foreach ($l in $gitOut) { if ("$l") { & $emit "$l" } }
             if ($LASTEXITCODE -ne 0) {
-                & $emit "git $($step[0]) failed (exit $LASTEXITCODE)"
+                & $emit "[$($Repo.Name)] git $($step[0]) failed (exit $LASTEXITCODE)"
                 $ok = $false
                 break
             }
         }
     }
 
-    & $emit $(if ($ok) { 'sync complete' } else { 'sync FAILED — check GITHUB_TOKEN in .env' })
+    & $emit $(if ($ok) { "[$($Repo.Name)] sync complete" } else { "[$($Repo.Name)] sync FAILED — check GITHUB_TOKEN in .env (the PAT needs Contents:Read on $($Repo.Url))" })
     $ok
 }
 
-# When the scripts clone was last synced: FETCH_HEAD is touched by every
+function Sync-PssRepo {
+    [CmdletBinding()]
+    param([scriptblock]$OnOutput = { param($line) })
+
+    $repos = @(Get-PssRepos | Where-Object Url)
+    if ($repos.Count -eq 0) {
+        & $OnOutput 'no scripts repo configured — set `repos` (or scriptsRepo) in config.json, or SCRIPTS_REPO in .env'
+        return $false
+    }
+    Update-PssRepoLayout -OnOutput $OnOutput
+
+    $allOk = $true
+    foreach ($repo in $repos) {
+        if (-not (Sync-PssOneRepo -Repo $repo -OnOutput $OnOutput)) { $allOk = $false }
+    }
+    $allOk
+}
+
+# When the scripts clones were last synced: FETCH_HEAD is touched by every
 # fetch; a fresh clone (no fetch yet) falls back to the .git dir itself.
 # Reflects syncs from any process (TUI, --sync, cron), not just this one.
 function Get-PssLastSyncTime {
-    $dir = (Get-PssPaths).ScriptsDir
-    foreach ($p in (Join-Path $dir '.git/FETCH_HEAD'), (Join-Path $dir '.git')) {
-        if (Test-Path $p) { return (Get-Item -Force $p).LastWriteTime }
+    $latest = $null
+    foreach ($repo in @(Get-PssRepos)) {
+        foreach ($p in (Join-Path $repo.Root '.git/FETCH_HEAD'), (Join-Path $repo.Root '.git')) {
+            if (Test-Path $p) {
+                $t = (Get-Item -Force $p).LastWriteTime
+                if (-not $latest -or $t -gt $latest) { $latest = $t }
+                break
+            }
+        }
     }
-    $null
+    $latest
 }
 
 # ---------------------------------------------------------------------------
-# Discovery — one folder per script (entry: script.json "entry", main.ps1,
-# <folder>.ps1 or run.ps1), plus loose .ps1 files in the repo root.
+# Discovery — one folder per script, plus loose .ps1/.py files in each repo
+# root. Runtime is detected from the entry file extension. Entry resolution:
+# script.json "entry" wins; else conventional PowerShell names, else
+# conventional Python names, else the sole/first script file of either kind.
 # ---------------------------------------------------------------------------
-function Get-PssScripts {
-    $paths = Get-PssPaths
-    $scripts = [System.Collections.Generic.List[object]]::new()
-    $root = $paths.ScriptsDir
-    if (-not (Test-Path $root)) { return $scripts }
+$script:SkipDirs = @('.git', '.github', '__pycache__', '.venv', 'node_modules')
 
-    foreach ($dir in (Get-ChildItem $root -Directory | Where-Object Name -notin '.git', '.github' | Sort-Object Name)) {
-        $meta = $null
-        $metaFile = Join-Path $dir.FullName 'script.json'
-        if (Test-Path $metaFile) {
-            try { $meta = Get-Content $metaFile -Raw | ConvertFrom-Json } catch { }
-        }
-        $entry = $null
+function Resolve-PssEntry {
+    # returns the entry file's full path, or $null
+    param([string]$DirPath, [string]$DirName, $Meta)
 
-        # explicit entry from script.json wins (may be a relative path with subfolders)
-        if ($meta -and $meta.PSObject.Properties['entry'] -and $meta.entry) {
-            $p = Join-Path $dir.FullName ([string]$meta.entry)
-            if (Test-Path $p) { $entry = (Resolve-Path -LiteralPath $p).Path }
-        }
-
-        # all .ps1 files in this folder (one level), used for matching + fallback.
-        # matched/compared case-insensitively because the server FS is case-sensitive.
-        $ps1Files = @(Get-ChildItem $dir.FullName -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -ieq '.ps1' } | Sort-Object Name)
-
-        if (-not $entry) {
-            foreach ($c in 'main.ps1', "$($dir.Name).ps1", 'run.ps1') {
-                $match = $ps1Files | Where-Object { $_.Name -ieq $c } | Select-Object -First 1
-                if ($match) { $entry = $match.FullName; break }
-            }
-        }
-
-        # fallback: no conventional entry — use the sole .ps1 in the folder.
-        # if several exist and none is conventional, take the first alphabetically
-        # (set "entry" in script.json to disambiguate).
-        if (-not $entry -and $ps1Files.Count -gt 0) { $entry = $ps1Files[0].FullName }
-
-        if (-not $entry) { continue }
-
-        $scriptArgs = @()
-        if ($meta -and $meta.PSObject.Properties['args'] -and $meta.args) { $scriptArgs = @($meta.args | ForEach-Object { "$_" }) }
-        $desc = ''
-        if ($meta -and $meta.PSObject.Properties['description'] -and $meta.description) { $desc = [string]$meta.description }
-        # optional per-script timeout — overrides the global runTimeoutMinutes
-        $timeout = $null
-        if ($meta -and $meta.PSObject.Properties['timeoutMinutes'] -and $null -ne ($meta.timeoutMinutes -as [double])) {
-            $timeout = [double]$meta.timeoutMinutes
-        }
-
-        $scripts.Add([pscustomobject]@{
-                Name           = $dir.Name
-                Dir            = $dir.FullName
-                Entry          = $entry
-                Args           = $scriptArgs
-                Description    = $desc
-                TimeoutMinutes = $timeout
-                EnvFile        = Join-Path $dir.FullName '.env'
-                EnvExample     = Join-Path $dir.FullName '.env.example'
-                ModuleDir      = Join-Path $paths.ModulesDir $dir.Name
-            })
+    if ($Meta -and $Meta.PSObject.Properties['entry'] -and $Meta.entry) {
+        $p = Join-Path $DirPath ([string]$Meta.entry)
+        if (Test-Path $p) { return (Resolve-Path -LiteralPath $p).Path }
     }
 
-    # loose .ps1 files in the repo root
-    foreach ($file in (Get-ChildItem $root -File -Filter '*.ps1' | Sort-Object Name)) {
-        $name = [IO.Path]::GetFileNameWithoutExtension($file.Name)
-        $scripts.Add([pscustomobject]@{
-                Name           = $name
-                Dir            = $root
-                Entry          = $file.FullName
-                Args           = @()
-                Description    = ''
-                TimeoutMinutes = $null
-                EnvFile        = Join-Path $root "$name.env"
-                EnvExample     = Join-Path $root "$name.env.example"
-                ModuleDir      = Join-Path $paths.ModulesDir $name
-            })
+    # matched/compared case-insensitively because the server FS is case-sensitive
+    $files = @(Get-ChildItem $DirPath -File -ErrorAction SilentlyContinue | Sort-Object Name)
+    $ps1 = @($files | Where-Object { $_.Extension -ieq '.ps1' })
+    $py = @($files | Where-Object { $_.Extension -ieq '.py' })
+
+    foreach ($c in 'main.ps1', "$DirName.ps1", 'run.ps1') {
+        $m = $ps1 | Where-Object { $_.Name -ieq $c } | Select-Object -First 1
+        if ($m) { return $m.FullName }
+    }
+    foreach ($c in 'main.py', "$DirName.py", 'run.py', '__main__.py') {
+        $m = $py | Where-Object { $_.Name -ieq $c } | Select-Object -First 1
+        if ($m) { return $m.FullName }
+    }
+    # no conventional entry — sole (or first alphabetical) file of either kind,
+    # PowerShell preferred; set "entry" in script.json to disambiguate
+    if ($ps1.Count -gt 0) { return $ps1[0].FullName }
+    if ($py.Count -gt 0) { return $py[0].FullName }
+    $null
+}
+
+function Get-PssRuntime {
+    param([string]$Entry)
+    if ([IO.Path]::GetExtension($Entry) -ieq '.py') { 'python' } else { 'powershell' }
+}
+
+function New-PssScriptInfo {
+    param([string]$Name, [string]$Dir, [string]$Entry, $Meta, [string]$RepoName, [string]$EnvBase)
+    $paths = Get-PssPaths
+
+    $scriptArgs = @()
+    if ($Meta -and $Meta.PSObject.Properties['args'] -and $Meta.args) { $scriptArgs = @($Meta.args | ForEach-Object { "$_" }) }
+    $desc = ''
+    if ($Meta -and $Meta.PSObject.Properties['description'] -and $Meta.description) { $desc = [string]$Meta.description }
+    # optional per-script timeout — overrides the global runTimeoutMinutes
+    $timeout = $null
+    if ($Meta -and $Meta.PSObject.Properties['timeoutMinutes'] -and $null -ne ($Meta.timeoutMinutes -as [double])) {
+        $timeout = [double]$Meta.timeoutMinutes
+    }
+
+    [pscustomobject]@{
+        Name           = $Name
+        Dir            = $Dir
+        Entry          = $Entry
+        Runtime        = Get-PssRuntime $Entry
+        Repo           = $RepoName
+        Args           = $scriptArgs
+        Description    = $desc
+        TimeoutMinutes = $timeout
+        # folder scripts use '<dir>/.env'; loose files use '<name>.env' beside them
+        EnvFile        = Join-Path $Dir $(if ($EnvBase) { "$EnvBase.env" } else { '.env' })
+        EnvExample     = Join-Path $Dir $(if ($EnvBase) { "$EnvBase.env.example" } else { '.env.example' })
+        ModuleDir      = Join-Path $paths.ModulesDir $Name
+        VenvDir        = Join-Path $paths.VenvsDir $Name
+    }
+}
+
+function Get-PssScripts {
+    $scripts = [System.Collections.Generic.List[object]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($repo in @(Get-PssRepos)) {
+        $root = $repo.Root
+        if (-not (Test-Path $root)) { continue }
+
+        foreach ($dir in (Get-ChildItem $root -Directory | Where-Object Name -notin $script:SkipDirs | Sort-Object Name)) {
+            $meta = $null
+            $metaFile = Join-Path $dir.FullName 'script.json'
+            if (Test-Path $metaFile) {
+                try { $meta = Get-Content $metaFile -Raw | ConvertFrom-Json } catch { }
+            }
+            $entry = Resolve-PssEntry -DirPath $dir.FullName -DirName $dir.Name -Meta $meta
+            if (-not $entry) { continue }
+
+            # identity is the folder name; a cross-repo duplicate gets a stable
+            # qualified name (locks/history/cron/log files all key on Name)
+            $name = $dir.Name
+            if (-not $seen.Add($name)) {
+                $name = "$($repo.Name)-$($dir.Name)"
+                [void]$seen.Add($name)
+                Write-Verbose "duplicate script folder '$($dir.Name)' — qualified as '$name'"
+            }
+            $scripts.Add((New-PssScriptInfo -Name $name -Dir $dir.FullName -Entry $entry -Meta $meta -RepoName $repo.Name -EnvBase ''))
+        }
+
+        # loose .ps1/.py files in the repo root
+        foreach ($file in (Get-ChildItem $root -File | Where-Object { $_.Extension -in '.ps1', '.py' } | Sort-Object Name)) {
+            $name = [IO.Path]::GetFileNameWithoutExtension($file.Name)
+            if (-not $seen.Add($name)) {
+                $name = "$($repo.Name)-$([IO.Path]::GetFileNameWithoutExtension($file.Name))"
+                [void]$seen.Add($name)
+            }
+            $scripts.Add((New-PssScriptInfo -Name $name -Dir $root -Entry $file.FullName -Meta $null -RepoName $repo.Name -EnvBase ([IO.Path]::GetFileNameWithoutExtension($file.Name))))
+        }
     }
 
     $scripts
 }
 
-Export-ModuleMember -Function Sync-PssRepo, Get-PssScripts, Get-PssLastSyncTime
+Export-ModuleMember -Function Sync-PssRepo, Sync-PssOneRepo, Update-PssRepoLayout, Get-PssScripts, Get-PssLastSyncTime

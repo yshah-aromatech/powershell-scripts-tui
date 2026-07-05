@@ -1,9 +1,11 @@
 {
   "scriptsRepo": "https://github.com/YOUR_ORG/your-powershell-scripts-repo",
   "branch": "main",
+  "repos": [],
   "dataDir": "~/.psscripts",
   "n8nWebhookUrl": "",
   "pwshBin": "pwsh",
+  "pythonBin": "python3",
   "monitorIntervalMs": 1000,
   "logTailKb": 64,
   "runTimeoutMinutes": 0,

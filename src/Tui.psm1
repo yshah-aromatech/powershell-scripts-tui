@@ -469,12 +469,41 @@ function Invoke-TuiDepScan {
 }
 
 function Invoke-TuiLint {
-    # PSScriptAnalyzer gate — analyzer is saved into <dataDir>/tools on first use
+    # PSScriptAnalyzer gate — analyzer is saved into <dataDir>/tools on first
+    # use. Python scripts get pyflakes (auto-installed into the venv), with a
+    # py_compile syntax check as the fallback.
     $sel = Get-TuiSelected
     if (-not $sel) { return }
     $toolsDir = Join-Path (Get-PssPaths).DataDir 'tools'
     $entryEsc = $sel.Entry -replace "'", "''"
     $cfg = Get-PssConfig
+
+    if (Test-PssPythonScript $sel) {
+        $pyEsc = (Get-PssVenvPython -Script $sel) -replace "'", "''"
+        $sysPyEsc = ([string]$cfg.pythonBin) -replace "'", "''"
+        $cmd = @"
+`$py = '$pyEsc'
+if (-not (Test-Path `$py)) { `$py = '$sysPyEsc' }   # no venv yet — lint with the system python
+& `$py -c 'import pyflakes' 2>`$null
+if (`$LASTEXITCODE -ne 0) {
+    Write-Host 'installing pyflakes (first use)...'
+    & `$py -m pip install --quiet pyflakes 2>&1 | Out-Null
+    & `$py -c 'import pyflakes' 2>`$null
+}
+if (`$LASTEXITCODE -eq 0) {
+    `$findings = & `$py -m pyflakes '$entryEsc' 2>&1
+    if (`$LASTEXITCODE -eq 0 -and -not "`$findings") { Write-Host 'no findings — clean'; exit 0 }
+    `$findings | ForEach-Object { Write-Host `$_ }
+    exit 1
+}
+Write-Host 'pyflakes unavailable — syntax check only (py_compile)'
+& `$py -m py_compile '$entryEsc' 2>&1 | ForEach-Object { Write-Host `$_ }
+if (`$LASTEXITCODE -eq 0) { Write-Host 'syntax OK' } else { exit 1 }
+"@
+        Start-TuiTask -Name "lint: $($sel.Name)" -FileName ([string]$cfg.pwshBin) `
+            -Arguments @('-NoProfile', '-NonInteractive', '-Command', $cmd)
+        return
+    }
     $cmd = @"
 `$tools = '$toolsDir'
 `$env:PSModulePath = "`$tools$([IO.Path]::PathSeparator)`$env:PSModulePath"
@@ -531,23 +560,31 @@ function Invoke-TuiInstallDeps {
 function Invoke-TuiUpdate {
     & sudo -n true 2>$null
     $sudoOk = ($LASTEXITCODE -eq 0)
+    # module upgrades, then python venv upgrades (the inner scriptblock is
+    # self-contained — -After blocks run later, outside this dynamic scope)
     $moduleStage = {
         $cfg2 = Get-PssConfig
         Start-TuiTask -Name 'upgrade script modules' -FileName ([string]$cfg2.pwshBin) `
-            -Arguments @('-NoProfile', '-NonInteractive', '-Command', (Get-PssModuleUpgradeCommand))
+            -Arguments @('-NoProfile', '-NonInteractive', '-Command', (Get-PssModuleUpgradeCommand)) `
+            -AfterAlways {
+            param($ok)
+            $cfg3 = Get-PssConfig
+            Start-TuiTask -Name 'upgrade python venvs' -FileName ([string]$cfg3.pwshBin) `
+                -Arguments @('-NoProfile', '-NonInteractive', '-Command', (Get-PssVenvUpgradeCommand))
+        }
     }
     if ($sudoOk) {
-        Start-TuiTask -Name 'update PowerShell (apt)' -FileName 'bash' `
-            -Arguments @('-c', 'sudo -n apt-get update && sudo -n apt-get install -y --only-upgrade powershell') `
+        Start-TuiTask -Name 'update PowerShell + Python (apt)' -FileName 'bash' `
+            -Arguments @('-c', 'sudo -n apt-get update && sudo -n apt-get install -y --only-upgrade powershell python3 python3-pip python3-venv') `
             -After $moduleStage
     } else {
         Add-TuiBanner -Lead '⚠ system update'
         Add-TuiOutput @(
             'sudo requires a password here. Run manually:',
-            '  sudo apt-get update && sudo apt-get install -y --only-upgrade powershell',
+            '  sudo apt-get update && sudo apt-get install -y --only-upgrade powershell python3 python3-pip python3-venv',
             'or allow it without a password:',
             "  echo `"`$USER ALL=(root) NOPASSWD: /usr/bin/apt-get`" | sudo tee /etc/sudoers.d/psscripts-apt",
-            'continuing with module upgrades...')
+            'continuing with module + venv upgrades...')
         & $moduleStage
     }
 }
@@ -1065,8 +1102,12 @@ function Show-TuiFrame {
     # chip-style: only the title carries the accent fill; the rest of the
     # line is transparent with the repo/host info kept muted on the right
     $title = ' psscripts '
-    $repoUrl = Get-PssScriptsRepo
-    $repo = if ($repoUrl) { ($repoUrl -replace '^https://(x-access-token:[^@]+@)?', '') } else { 'no scripts repo configured' }
+    $repoList = @(Get-PssRepos | Where-Object Url)
+    $repo = if ($repoList.Count -gt 1) {
+        ($repoList | ForEach-Object Name) -join ' + '
+    } elseif ($repoList.Count -eq 1) {
+        ($repoList[0].Url -replace '^https://(x-access-token:[^@]+@)?', '')
+    } else { 'no scripts repo configured' }
     $ver = if ($script:S.AppVersion) { " · $($script:S.AppVersion)" } else { '' }
     $sync = ''
     if ($script:S.ContainsKey('LastSync') -and $script:S.LastSync) {
@@ -1208,13 +1249,15 @@ function Get-TuiListRows {
             $nameEnd = "$($t.Reset)$($t.SelBg)"   # drop bold before the age/sched cells
             $lead = "$($t.Blue)▎"                 # accent bar marks the selection
         }
-        $name = Format-TuiPad -Text $scr.Name -Width ($Width - 9)
+        # 2-char runtime tag (ps/py) between name and age
+        $rt = if ("$($scr.Runtime)" -eq 'python') { 'py' } else { 'ps' }
+        $name = Format-TuiPad -Text $scr.Name -Width ($Width - 12)
         # show why a filtered row matched: highlight the filter substring
         if ($script:S.Filter) {
             $name = [regex]::Replace($name, '(' + [regex]::Escape($script:S.Filter) + ')',
                 "$($t.BrCyan)" + '$1' + $rowFg, 'IgnoreCase')
         }
-        $rows += "$rowBg$lead$badge$rowBg $rowFg$name$nameEnd$ageCol$rowBg $sched$rowBg "
+        $rows += "$rowBg$lead$badge$rowBg $rowFg$name$nameEnd$($t.Muted)$rt $ageCol$rowBg $sched$rowBg "
     }
     $rows
 }
@@ -1249,13 +1292,17 @@ function Get-TuiDetailRows {
         if ($root -and $entry.StartsWith($root)) { $entry = $entry.Substring($root.Length).TrimStart('/', '\') }
         else { $entry = $entry.Replace($HOME, '~') }
         $envN = Get-TuiEnvVarCount -Script $sel
-        $mods = if ($sel.ModuleDir -and (Test-Path $sel.ModuleDir)) { 'mods ✓' } else { 'mods —' }
+        $mods = if (Test-PssPythonScript $sel) {
+            if (Test-PssVenv -Script $sel) { 'venv ✓' } else { 'venv —' }
+        } elseif ($sel.ModuleDir -and (Test-Path $sel.ModuleDir)) { 'mods ✓' } else { 'mods —' }
         $cron = '—'
         if ($script:S.Schedules.ContainsKey($sel.Name)) {
             $expr = $script:S.Schedules[$sel.Name]
             $cron = "$expr$(Get-TuiNextRunHint -Name $sel.Name -Expression $expr)"
         }
-        $pairs += , @('', $sel.Name, "$($t.Bold)$($t.White)")
+        $rtName = if (Test-PssPythonScript $sel) { 'python' } else { 'pwsh' }
+        $repoTag = if ($null -ne $sel.PSObject.Properties['Repo'] -and "$($sel.Repo)") { " · $($sel.Repo)" } else { '' }
+        $pairs += , @('', "$($sel.Name) · $rtName$repoTag", "$($t.Bold)$($t.White)")
         $pairs += , @('entry:', $entry, $t.Fg)
         $pairs += , @('env:', "$(if ($envN -gt 0) { "$envN var(s)" } else { '—' }) · $mods", $t.Fg)
         $pairs += , @('cron:', $cron, $t.Cyan)
@@ -1483,7 +1530,7 @@ function Get-TuiHelpRows {
         @('v', 'edit the script''s .env (ctrl+s save, esc cancel)'),
         @('s', 'sync the scripts repo'),
         @('i', 'scan imports, install missing modules'),
-        @('l', 'lint the script with PSScriptAnalyzer'),
+        @('l', 'lint the script (PSScriptAnalyzer / pyflakes)'),
         @('u', 'update PowerShell (apt) + upgrade script modules'),
         @('U', 'update this app (git pull), restart to apply'),
         @('h', 'run history: enter view log · r re-run · f filter by script'),
