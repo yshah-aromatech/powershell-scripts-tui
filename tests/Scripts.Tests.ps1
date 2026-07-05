@@ -199,3 +199,81 @@ Describe 'multi-repo config' {
         Test-Path (Join-Path $script:sroot '.git') | Should -BeFalse
     }
 }
+
+Describe 'Get-PssScriptDetail' {
+    BeforeAll {
+        Initialize-Pss -AppDir $script:appDir
+        $script:droot = (Get-PssPaths).ScriptsDir
+    }
+    BeforeEach {
+        Get-ChildItem $script:droot -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+    }
+
+    It 'extracts the param block, help, readme and env docs from a PowerShell script' {
+        $d = Join-Path $script:droot 'rich'
+        New-Item -ItemType Directory -Path $d | Out-Null
+        @'
+<#
+.SYNOPSIS
+    Grants things.
+.DESCRIPTION
+    Longer help text.
+.PARAMETER Role
+    Which role to grant.
+#>
+param(
+    [Parameter(Mandatory)]
+    [string]$Target,
+    [ValidateSet('read', 'write')]
+    [string]$Role = 'read',
+    [switch]$DryRun,
+    [int]$MaxWorkers = 8
+)
+Write-Output ok
+'@ | Set-Content (Join-Path $d 'main.ps1')
+        '# Aromatech tenant id' | Set-Content (Join-Path $d '.env.example')
+        Add-Content (Join-Path $d '.env.example') 'MS_TENANT_ID=your-tenant'
+        'MS_TENANT_ID=real-secret-value-123' | Set-Content (Join-Path $d '.env')
+        '# rich script docs' | Set-Content (Join-Path $d 'README.md')
+
+        $s = @(Get-PssScripts) | Where-Object Name -eq 'rich'
+        $detail = Get-PssScriptDetail -Script $s
+
+        $detail.parameterSource | Should -Match 'AST'
+        $p = @($detail.parameters)
+        $p.Count | Should -Be 4
+        ($p | Where-Object name -eq 'Target').mandatory | Should -BeTrue
+        ($p | Where-Object name -eq 'Role').validateSet | Should -Be @('read', 'write')
+        ($p | Where-Object name -eq 'Role').default | Should -Match 'read'
+        ($p | Where-Object name -eq 'Role').description | Should -Match 'Which role'
+        ($p | Where-Object name -eq 'DryRun').isSwitch | Should -BeTrue
+        ($p | Where-Object name -eq 'MaxWorkers').type | Should -Be 'Int32'
+        $detail.help.synopsis | Should -Match 'Grants things'
+        $detail.readme | Should -Match 'rich script docs'
+        @($detail.envExample)[0].key | Should -Be 'MS_TENANT_ID'
+        @($detail.envExample)[0].comment | Should -Match 'tenant id'
+        $detail.envConfigured | Should -Contain 'MS_TENANT_ID'
+        ($detail | ConvertTo-Json -Depth 6) | Should -Not -Match 'real-secret-value-123'
+    }
+
+    It 'returns empty parameters with a readme pointer for python scripts' {
+        $d = Join-Path $script:droot 'pydetail'
+        New-Item -ItemType Directory -Path $d | Out-Null
+        'print(1)' | Set-Content (Join-Path $d 'main.py')
+        '# python docs' | Set-Content (Join-Path $d 'README.md')
+        $s = @(Get-PssScripts) | Where-Object Name -eq 'pydetail'
+        $detail = Get-PssScriptDetail -Script $s
+        @($detail.parameters).Count | Should -Be 0
+        $detail.parameterSource | Should -Match 'readme'
+        $detail.readme | Should -Match 'python docs'
+    }
+
+    It 'degrades gracefully on a script with parse errors' {
+        $d = Join-Path $script:droot 'broken'
+        New-Item -ItemType Directory -Path $d | Out-Null
+        'param([string]$X' | Set-Content (Join-Path $d 'main.ps1')   # unclosed
+        $s = @(Get-PssScripts) | Where-Object Name -eq 'broken'
+        $detail = Get-PssScriptDetail -Script $s
+        $detail.parseWarnings | Should -BeGreaterThan 0
+    }
+}

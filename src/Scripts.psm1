@@ -238,4 +238,124 @@ function Get-PssScripts {
     $scripts
 }
 
-Export-ModuleMember -Function Sync-PssRepo, Sync-PssOneRepo, Update-PssRepoLayout, Get-PssScripts, Get-PssLastSyncTime
+# ---------------------------------------------------------------------------
+# Script detail — everything an agent (or human) needs to call a script:
+# README, documented .env keys, and — for PowerShell — the param() block
+# parsed from the AST (never executed).
+# ---------------------------------------------------------------------------
+function Get-PssScriptParameters {
+    # PowerShell entry -> list of @{ Name; Type; Mandatory; Default;
+    # ValidateSet; IsSwitch; Description }, plus Help/Warnings via -Detail
+    param([Parameter(Mandatory)][string]$Entry)
+    $params = [System.Collections.Generic.List[object]]::new()
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Entry, [ref]$tokens, [ref]$errors)
+    $help = $null
+    try { $help = $ast.GetHelpContent() } catch { }
+
+    if ($ast.ParamBlock) {
+        foreach ($p in @($ast.ParamBlock.Parameters)) {
+            $name = $p.Name.VariablePath.UserPath
+            $type = "$($p.StaticType.Name)"
+            $default = if ($p.DefaultValue) { $p.DefaultValue.Extent.Text } else { $null }
+            $mandatory = $false
+            $validateSet = @()
+            foreach ($attr in $p.Attributes) {
+                if ($attr -isnot [System.Management.Automation.Language.AttributeAst]) { continue }
+                if ($attr.TypeName.Name -match '^Parameter') {
+                    foreach ($na in @($attr.NamedArguments)) {
+                        if ($na.ArgumentName -eq 'Mandatory' -and
+                            ($na.ExpressionOmitted -or "$($na.Argument.Extent.Text)" -match '\$true|^1$')) {
+                            $mandatory = $true
+                        }
+                    }
+                } elseif ($attr.TypeName.Name -match '^ValidateSet') {
+                    $validateSet = @($attr.PositionalArguments |
+                            Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] } |
+                            ForEach-Object Value)
+                }
+            }
+            $desc = ''
+            if ($help -and $help.Parameters -and $help.Parameters.ContainsKey($name.ToUpperInvariant())) {
+                $desc = ("$($help.Parameters[$name.ToUpperInvariant()])").Trim()
+            }
+            $params.Add([pscustomobject]@{
+                    Name        = $name
+                    Type        = $type
+                    Mandatory   = $mandatory
+                    Default     = $default
+                    ValidateSet = $validateSet
+                    IsSwitch    = ($type -eq 'SwitchParameter')
+                    Description = $desc
+                })
+        }
+    }
+    [pscustomobject]@{
+        Parameters    = $params
+        Synopsis      = $(if ($help -and $help.Synopsis) { "$($help.Synopsis)".Trim() } else { '' })
+        Help          = $(if ($help -and $help.Description) { "$($help.Description)".Trim() } else { '' })
+        ParseWarnings = @($errors).Count
+    }
+}
+
+function Get-PssScriptDetail {
+    param([Parameter(Mandatory)]$Script)
+    $isPython = ("$($Script.Runtime)" -eq 'python')
+
+    # README.md (case-insensitive; server FS is case-sensitive), capped 16KB
+    $readme = ''
+    $readmeFile = Get-ChildItem $Script.Dir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ieq 'readme.md' } | Select-Object -First 1
+    if ($readmeFile) {
+        $readme = Get-Content $readmeFile.FullName -Raw -ErrorAction SilentlyContinue
+        if ($readme.Length -gt 16KB) { $readme = $readme.Substring(0, 16KB) + "`n[truncated]" }
+    }
+
+    # documented env vars from .env.example; configured = key NAMES only
+    $envExample = @(Read-PssEnvDoc -Path $Script.EnvExample | ForEach-Object {
+            [ordered]@{ key = $_.Key; default = $_.Default; comment = $_.Comment }
+        })
+    $envConfigured = @((Read-PssEnvFile $Script.EnvFile).Keys)
+
+    $detail = [ordered]@{
+        name           = $Script.Name
+        description    = "$($Script.Description)"
+        runtime        = "$($Script.Runtime)"
+        repo           = "$($Script.Repo)"
+        entry          = [IO.Path]::GetFileName("$($Script.Entry)")
+        timeoutMinutes = $Script.TimeoutMinutes
+        defaultArgs    = @($Script.Args)
+        readme         = "$readme"
+        envExample     = $envExample
+        envConfigured  = $envConfigured
+    }
+
+    if ($isPython) {
+        $detail.parameters = @()
+        $detail.parameterSource = 'none — see readme'
+        $detail.argsHint = 'Python: pass args as e.g. --flag value; see readme for supported options'
+    } else {
+        $scan = Get-PssScriptParameters -Entry $Script.Entry
+        $detail.parameters = @($scan.Parameters | ForEach-Object {
+                [ordered]@{
+                    name        = $_.Name
+                    type        = $_.Type
+                    mandatory   = $_.Mandatory
+                    default     = $_.Default
+                    validateSet = @($_.ValidateSet)
+                    isSwitch    = $_.IsSwitch
+                    description = $_.Description
+                }
+            })
+        $detail.parameterSource = 'param() block (PowerShell AST)'
+        if ($scan.Synopsis -or $scan.Help) {
+            $detail.help = [ordered]@{ synopsis = $scan.Synopsis; description = $scan.Help }
+        }
+        if ($scan.ParseWarnings) { $detail.parseWarnings = $scan.ParseWarnings }
+        $detail.argsHint = 'PowerShell: -ParamName value, switches as bare -SwitchName; quote values with spaces'
+    }
+    $detail
+}
+
+Export-ModuleMember -Function Sync-PssRepo, Sync-PssOneRepo, Update-PssRepoLayout, Get-PssScripts, Get-PssLastSyncTime,
+Get-PssScriptDetail, Get-PssScriptParameters

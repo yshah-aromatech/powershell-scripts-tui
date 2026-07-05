@@ -20,21 +20,34 @@ $script:McpMaxBodyBytes = 1MB
 # Tool registry
 # ---------------------------------------------------------------------------
 function Get-PssMcpTools {
+    $readOnly = [ordered]@{ readOnlyHint = $true; idempotentHint = $true }
+    $scriptArg = [ordered]@{ type = 'string'; description = 'Script name exactly as returned by list_scripts' }
     @(
         [ordered]@{
             name        = 'list_scripts'
-            description = 'List every script this server can run, with description, last run status and cron schedule.'
+            description = 'List every script this server can run, with runtime (powershell/python), repo, description, last run status/duration, whether it is currently running, and its cron schedule. Call get_script_details before running an unfamiliar script.'
             inputSchema = [ordered]@{ type = 'object'; properties = [ordered]@{} }
+            annotations = $readOnly
+        },
+        [ordered]@{
+            name        = 'get_script_details'
+            description = "Everything needed to call a script correctly: its README, documented environment variables (.env.example), default args, and — for PowerShell — the full parameter list (names, types, mandatory, defaults, allowed values, per-parameter help) parsed from the script's param() block. Call this before run_script when unsure about arguments."
+            inputSchema = [ordered]@{
+                type       = 'object'
+                required   = @('script')
+                properties = [ordered]@{ script = $scriptArg }
+            }
+            annotations = $readOnly
         },
         [ordered]@{
             name        = 'run_script'
-            description = 'Run a script to completion and return its status, exit code and output. Long scripts block until done. A script that is already running elsewhere returns status "skipped".'
+            description = 'Run a script to completion and return its status, exit code and output. Blocks until the script finishes — these scripts normally run in under a couple of minutes. A script that is already running elsewhere returns status "skipped". Use get_script_details first to learn the accepted arguments.'
             inputSchema = [ordered]@{
                 type       = 'object'
                 required   = @('script')
                 properties = [ordered]@{
-                    script          = [ordered]@{ type = 'string'; description = 'Script name exactly as returned by list_scripts' }
-                    args            = [ordered]@{ type = 'string'; description = "Extra command-line arguments, quote-aware, e.g. -DryRun -Role read" }
+                    script          = $scriptArg
+                    args            = [ordered]@{ type = 'string'; description = "Extra command-line arguments, quote-aware. PowerShell scripts: -ParamName value / bare -Switch (e.g. -DryRun -Role read); python: --flag value" }
                     env             = [ordered]@{ type = 'object'; additionalProperties = [ordered]@{ type = 'string' }; description = "Extra environment variables for this run only; override the script's .env values" }
                     timeout_minutes = [ordered]@{ type = 'number'; description = 'Override the run timeout for this run (minutes)' }
                 }
@@ -42,7 +55,7 @@ function Get-PssMcpTools {
         },
         [ordered]@{
             name        = 'get_history'
-            description = 'Recent run history (newest first), optionally filtered to one script.'
+            description = 'Recent run history (newest first), optionally filtered to one script. Each row has a logId usable with get_run_log.'
             inputSchema = [ordered]@{
                 type       = 'object'
                 properties = [ordered]@{
@@ -50,6 +63,75 @@ function Get-PssMcpTools {
                     limit  = [ordered]@{ type = 'number'; description = 'Max entries to return (default 20, max 200)' }
                 }
             }
+            annotations = $readOnly
+        },
+        [ordered]@{
+            name        = 'get_run_log'
+            description = "Fetch the (secret-redacted) log of a past run by its logId from get_history — use it to diagnose failures beyond the short output tail."
+            inputSchema = [ordered]@{
+                type       = 'object'
+                required   = @('log_id')
+                properties = [ordered]@{
+                    log_id  = [ordered]@{ type = 'string'; description = 'logId value from a get_history row' }
+                    tail_kb = [ordered]@{ type = 'number'; description = 'How much of the end of the log to return in KB (default 64, max 256)' }
+                }
+            }
+            annotations = $readOnly
+        },
+        [ordered]@{
+            name        = 'sync_repos'
+            description = 'Sync (git pull/hard-reset) all configured scripts repos so the latest scripts are available. Run this before list_scripts if the repos may have changed.'
+            inputSchema = [ordered]@{ type = 'object'; properties = [ordered]@{} }
+            annotations = [ordered]@{ idempotentHint = $true }
+        },
+        [ordered]@{
+            name        = 'get_schedules'
+            description = 'All cron schedules currently configured, with each next fire time.'
+            inputSchema = [ordered]@{ type = 'object'; properties = [ordered]@{} }
+            annotations = $readOnly
+        },
+        [ordered]@{
+            name        = 'set_schedule'
+            description = "Create or replace a script's cron schedule. Accepts a 5-field cron expression (e.g. */30 * * * *) or @hourly/@daily/@weekly/@monthly/@reboot. The schedule is written to the server's crontab and runs through the full pipeline (deps, logs, webhook)."
+            inputSchema = [ordered]@{
+                type       = 'object'
+                required   = @('script', 'cron')
+                properties = [ordered]@{
+                    script = $scriptArg
+                    cron   = [ordered]@{ type = 'string'; description = '5-field cron expression or @hourly/@daily/@weekly/@monthly/@reboot' }
+                }
+            }
+        },
+        [ordered]@{
+            name        = 'remove_schedule'
+            description = "Remove a script's cron schedule."
+            inputSchema = [ordered]@{
+                type       = 'object'
+                required   = @('script')
+                properties = [ordered]@{ script = $scriptArg }
+            }
+        },
+        [ordered]@{
+            name        = 'install_deps'
+            description = "Scan a script's dependencies (PowerShell modules or python packages) and install whatever is missing into its isolated module dir / venv. Safe to call repeatedly."
+            inputSchema = [ordered]@{
+                type       = 'object'
+                required   = @('script')
+                properties = [ordered]@{ script = $scriptArg }
+            }
+            annotations = [ordered]@{ idempotentHint = $true }
+        },
+        [ordered]@{
+            name        = 'update_app'
+            description = 'Update this app itself (git pull --ff-only). The MCP service must be restarted afterwards to apply.'
+            inputSchema = [ordered]@{ type = 'object'; properties = [ordered]@{} }
+            annotations = [ordered]@{ idempotentHint = $true }
+        },
+        [ordered]@{
+            name        = 'update_packages'
+            description = 'Upgrade every PowerShell module dir and python venv to latest package versions (plus apt packages when passwordless sudo is available). Can take several minutes — raise the tool timeout before calling.'
+            inputSchema = [ordered]@{ type = 'object'; properties = [ordered]@{} }
+            annotations = [ordered]@{ idempotentHint = $true }
         }
     )
 }
@@ -68,13 +150,35 @@ function Invoke-PssMcpTool {
     if ($null -eq $Arguments) { $Arguments = @{} }
     switch ($Name) {
         'list_scripts' { return Invoke-PssMcpListScripts }
+        'get_script_details' { return Invoke-PssMcpScriptDetails -Arguments $Arguments }
         'run_script' { return Invoke-PssMcpRunScript -Arguments $Arguments }
         'get_history' { return Invoke-PssMcpGetHistory -Arguments $Arguments }
+        'get_run_log' { return Invoke-PssMcpGetRunLog -Arguments $Arguments }
+        'sync_repos' { return Invoke-PssMcpSyncRepos }
+        'get_schedules' { return Invoke-PssMcpGetSchedules }
+        'set_schedule' { return Invoke-PssMcpSetSchedule -Arguments $Arguments }
+        'remove_schedule' { return Invoke-PssMcpRemoveSchedule -Arguments $Arguments }
+        'install_deps' { return Invoke-PssMcpInstallDeps -Arguments $Arguments }
+        'update_app' { return Invoke-PssMcpUpdateApp }
+        'update_packages' { return Invoke-PssMcpUpdatePackages }
         default {
             $valid = (Get-PssMcpTools | ForEach-Object name) -join ', '
             return @{ Text = "unknown tool '$Name' — valid tools: $valid"; IsError = $true }
         }
     }
+}
+
+# shared script-by-name lookup: @{ Script } or @{ Error } with valid names
+function Resolve-PssMcpScript {
+    param([hashtable]$Arguments)
+    $name = "$($Arguments['script'])"
+    if (-not $name) { return @{ Error = "missing required argument 'script'" } }
+    $target = Get-PssScripts | Where-Object Name -eq $name | Select-Object -First 1
+    if (-not $target) {
+        $valid = (@(Get-PssScripts) | ForEach-Object Name) -join ', '
+        return @{ Error = "unknown script '$name' — valid scripts: $valid" }
+    }
+    @{ Script = $target }
 }
 
 function Invoke-PssMcpListScripts {
@@ -84,30 +188,36 @@ function Invoke-PssMcpListScripts {
     $items = foreach ($s in @(Get-PssScripts)) {
         $st = $statuses[$s.Name]
         [ordered]@{
-            name           = $s.Name
-            description    = "$($s.Description)"
-            entry          = [IO.Path]::GetFileName("$($s.Entry)")
-            lastStatus     = if ($st) { $st.Status } else { 'never run' }
-            lastRunAt      = if ($st -and $st.At) { $st.At.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null }
-            schedule       = if ($schedules.ContainsKey($s.Name)) { $schedules[$s.Name] } else { $null }
-            timeoutMinutes = $s.TimeoutMinutes
+            name            = $s.Name
+            runtime         = "$($s.Runtime)"
+            repo            = "$($s.Repo)"
+            description     = "$($s.Description)"
+            entry           = [IO.Path]::GetFileName("$($s.Entry)")
+            running         = (Test-PssScriptLocked -Name $s.Name)
+            lastStatus      = if ($st) { $st.Status } else { 'never run' }
+            lastRunAt       = if ($st -and $st.At) { $st.At.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null }
+            lastDurationSec = if ($st) { $st.DurationSec } else { $null }
+            schedule        = if ($schedules.ContainsKey($s.Name)) { $schedules[$s.Name] } else { $null }
+            timeoutMinutes  = $s.TimeoutMinutes
         }
     }
     @{ Text = ([ordered]@{ scripts = @($items) } | ConvertTo-Json -Depth 6 -Compress); IsError = $false }
 }
 
+function Invoke-PssMcpScriptDetails {
+    param([hashtable]$Arguments)
+    $r = Resolve-PssMcpScript -Arguments $Arguments
+    if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
+    $detail = Get-PssScriptDetail -Script $r.Script
+    @{ Text = ($detail | ConvertTo-Json -Depth 8 -Compress); IsError = $false }
+}
+
 function Invoke-PssMcpRunScript {
     param([hashtable]$Arguments)
 
-    $name = "$($Arguments['script'])"
-    if (-not $name) {
-        return @{ Text = "missing required argument 'script'"; IsError = $true }
-    }
-    $target = Get-PssScripts | Where-Object Name -eq $name | Select-Object -First 1
-    if (-not $target) {
-        $valid = (@(Get-PssScripts) | ForEach-Object Name) -join ', '
-        return @{ Text = "unknown script '$name' — valid scripts: $valid"; IsError = $true }
-    }
+    $r = Resolve-PssMcpScript -Arguments $Arguments
+    if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
+    $target = $r.Script
 
     $extraArgs = @(Split-PssArguments "$($Arguments['args'])")
     $extraEnv = @{}
@@ -177,9 +287,138 @@ function Invoke-PssMcpGetHistory {
             startedAt   = "$($h.startedAt)"
             durationSec = $h.durationSec
             logFile     = "$($h.logFile)"
+            logId       = $(if ("$($h.logFile)") { [IO.Path]::GetFileName("$($h.logFile)") } else { $null })
         }
     }
     @{ Text = ([ordered]@{ runs = @($runs) } | ConvertTo-Json -Depth 4 -Compress); IsError = $false }
+}
+
+function Invoke-PssMcpGetRunLog {
+    param([hashtable]$Arguments)
+    $logId = "$($Arguments['log_id'])"
+    # strict allow-list: a log basename only — no separators, no traversal
+    if ($logId -notmatch '^[A-Za-z0-9._-]+\.log$' -or $logId.Contains('..')) {
+        return @{ Text = "invalid log_id '$logId' — use the logId field from get_history"; IsError = $true }
+    }
+    $path = Join-Path (Get-PssPaths).LogsDir $logId
+    if (-not (Test-Path $path)) {
+        return @{ Text = "log '$logId' not found (rotated out after logRetentionDays?)"; IsError = $true }
+    }
+    $tailKb = 64
+    if ($null -ne ($Arguments['tail_kb'] -as [int])) { $tailKb = [Math]::Min(256, [Math]::Max(1, [int]$Arguments['tail_kb'])) }
+    $out = [ordered]@{
+        logId = $logId
+        log   = (Get-PssLogTail -LogFile $path -TailKb $tailKb)
+    }
+    @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
+}
+
+function Invoke-PssMcpSyncRepos {
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $ok = Sync-PssRepo -OnOutput { param($l) $lines.Add($l) }.GetNewClosure()
+    $out = [ordered]@{ ok = [bool]$ok; output = ($lines -join "`n") }
+    @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = (-not $ok) }
+}
+
+function Invoke-PssMcpGetSchedules {
+    $schedules = Get-PssSchedules
+    $items = foreach ($k in ($schedules.Keys | Sort-Object)) {
+        $next = $null
+        try {
+            $n = Get-PssCronNext -Expression $schedules[$k] -From (Get-Date)
+            if ($n) { $next = $n.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        } catch { }
+        [ordered]@{ script = $k; cron = $schedules[$k]; nextRun = $next }
+    }
+    @{ Text = ([ordered]@{ schedules = @($items) } | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
+}
+
+function Invoke-PssMcpSetSchedule {
+    param([hashtable]$Arguments)
+    $r = Resolve-PssMcpScript -Arguments $Arguments
+    if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
+    $cron = "$($Arguments['cron'])".Trim()
+    if (-not (Test-PssCronExpression $cron)) {
+        return @{ Text = "invalid cron expression '$cron' — use 5 fields (min hour dom mon dow, e.g. */30 * * * *) or @hourly/@daily/@weekly/@monthly/@reboot"; IsError = $true }
+    }
+    Set-PssSchedule -Name $r.Script.Name -Expression $cron
+    $next = $null
+    try {
+        $n = Get-PssCronNext -Expression $cron -From (Get-Date)
+        if ($n) { $next = $n.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    } catch { }
+    $out = [ordered]@{ script = $r.Script.Name; cron = $cron; nextRun = $next; note = 'schedule saved to crontab' }
+    @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
+}
+
+function Invoke-PssMcpRemoveSchedule {
+    param([hashtable]$Arguments)
+    $r = Resolve-PssMcpScript -Arguments $Arguments
+    if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
+    $had = (Get-PssSchedules).ContainsKey($r.Script.Name)
+    Remove-PssSchedule -Name $r.Script.Name
+    $out = [ordered]@{
+        script = $r.Script.Name
+        note   = $(if ($had) { 'schedule removed' } else { 'no schedule was set' })
+    }
+    @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
+}
+
+function Invoke-PssMcpInstallDeps {
+    param([hashtable]$Arguments)
+    $r = Resolve-PssMcpScript -Arguments $Arguments
+    if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
+    $missing = @(Get-PssMissingDeps -Script $r.Script)
+    if ($missing.Count -eq 0) {
+        return @{ Text = ([ordered]@{ script = $r.Script.Name; upToDate = $true } | ConvertTo-Json -Compress); IsError = $false }
+    }
+    $cfg = Get-PssConfig
+    $cmd = Get-PssInstallCommand -Script $r.Script -Modules $missing
+    $output = & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command $cmd 2>&1 | ForEach-Object { Hide-PssSecret "$_" }
+    $failed = ($LASTEXITCODE -ne 0)
+    $out = [ordered]@{
+        script    = $r.Script.Name
+        installed = @($missing | ForEach-Object Display)
+        ok        = (-not $failed)
+        output    = (@($output) -join "`n")
+    }
+    @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $failed }
+}
+
+function Invoke-PssMcpUpdateApp {
+    $app = Get-PssAppDir
+    $output = & git -C $app pull --ff-only 2>&1 | ForEach-Object { Hide-PssSecret "$_" }
+    $ok = ($LASTEXITCODE -eq 0)
+    $out = [ordered]@{
+        ok     = $ok
+        output = (@($output) -join "`n")
+        note   = 'restart the MCP service to apply: systemctl restart psscripts-mcp'
+    }
+    @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = (-not $ok) }
+}
+
+function Invoke-PssMcpUpdatePackages {
+    $cfg = Get-PssConfig
+    $lines = [System.Collections.Generic.List[string]]::new()
+
+    & sudo -n true 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $lines.Add('== apt upgrade (powershell + python) ==')
+        & bash -c 'sudo -n apt-get update -q && sudo -n apt-get install -y --only-upgrade powershell python3 python3-pip python3-venv' 2>&1 |
+            ForEach-Object { $lines.Add("$_") }
+    } else {
+        $lines.Add('apt stage skipped: passwordless sudo unavailable — run manually: sudo apt-get update && sudo apt-get install -y --only-upgrade powershell python3 python3-pip python3-venv')
+    }
+
+    $lines.Add('== module dirs ==')
+    & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command (Get-PssModuleUpgradeCommand) 2>&1 |
+        ForEach-Object { $lines.Add((Hide-PssSecret "$_")) }
+    $lines.Add('== python venvs ==')
+    & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command (Get-PssVenvUpgradeCommand) 2>&1 |
+        ForEach-Object { $lines.Add((Hide-PssSecret "$_")) }
+
+    $out = [ordered]@{ ok = $true; output = ($lines -join "`n") }
+    @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
 }
 
 # ---------------------------------------------------------------------------

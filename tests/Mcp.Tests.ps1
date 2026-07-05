@@ -89,20 +89,30 @@ Describe 'auth and protocol errors' {
 }
 
 Describe 'tools/list' {
-    It 'exposes exactly the three tools with object schemas' {
+    It 'exposes all twelve tools with object schemas' {
         $r = Send-Rpc -Method 'tools/list'
         $tools = @($r.Parsed.result.tools)
-        $tools.Count | Should -Be 3
-        ($tools | ForEach-Object name) | Should -Be @('list_scripts', 'run_script', 'get_history')
+        $tools.Count | Should -Be 12
+        ($tools | ForEach-Object name) | Should -Be @(
+            'list_scripts', 'get_script_details', 'run_script', 'get_history', 'get_run_log',
+            'sync_repos', 'get_schedules', 'set_schedule', 'remove_schedule',
+            'install_deps', 'update_app', 'update_packages')
         foreach ($t in $tools) {
             $t.description | Should -Not -BeNullOrEmpty
             $t.inputSchema.type | Should -Be 'object'
         }
     }
-    It 'marks script as required on run_script' {
+    It 'marks script as required on run_script and cron on set_schedule' {
         $r = Send-Rpc -Method 'tools/list'
         $run = $r.Parsed.result.tools | Where-Object name -eq 'run_script'
         @($run.inputSchema.required) | Should -Contain 'script'
+        $set = $r.Parsed.result.tools | Where-Object name -eq 'set_schedule'
+        @($set.inputSchema.required) | Should -Contain 'cron'
+    }
+    It 'annotates read-only tools' {
+        $r = Send-Rpc -Method 'tools/list'
+        ($r.Parsed.result.tools | Where-Object name -eq 'list_scripts').annotations.readOnlyHint | Should -BeTrue
+        ($r.Parsed.result.tools | Where-Object name -eq 'get_run_log').annotations.readOnlyHint | Should -BeTrue
     }
 }
 
@@ -187,5 +197,115 @@ Describe 'get_history tool' {
         $runs = ($r.Parsed.result.content[0].text | ConvertFrom-Json).runs
         @($runs).Count | Should -BeGreaterThan 0
         foreach ($x in $runs) { $x.script | Should -Be 'hello' }
+    }
+}
+
+Describe 'get_script_details tool' {
+    It 'returns parsed parameters for a PowerShell script' {
+        $d = Join-Path (Get-PssPaths).ScriptsDir 'detailed'
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        "param([Parameter(Mandatory)][string]`$Who, [switch]`$DryRun)`nWrite-Output hi" |
+            Set-Content (Join-Path $d 'main.ps1')
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_script_details'; arguments = @{ script = 'detailed' } }
+        $r.Parsed.result.isError | Should -BeFalse
+        $detail = $r.Parsed.result.content[0].text | ConvertFrom-Json
+        @($detail.parameters | ForEach-Object name) | Should -Be @('Who', 'DryRun')
+        ($detail.parameters | Where-Object name -eq 'Who').mandatory | Should -BeTrue
+        ($detail.parameters | Where-Object name -eq 'DryRun').isSwitch | Should -BeTrue
+        $detail.argsHint | Should -Match 'PowerShell'
+    }
+    It 'rejects an unknown script' {
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_script_details'; arguments = @{ script = 'nope' } }
+        $r.Parsed.result.isError | Should -BeTrue
+    }
+}
+
+Describe 'list_scripts enrichment' {
+    It 'reports runtime, repo and running state' {
+        $lock = Lock-PssScript -Name 'hello'
+        try {
+            $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'list_scripts'; arguments = @{} }
+            $list = ($r.Parsed.result.content[0].text | ConvertFrom-Json).scripts
+            $hello = $list | Where-Object name -eq 'hello'
+            $hello.running | Should -BeTrue
+            $hello.runtime | Should -Be 'powershell'
+            $hello.repo | Should -Be 'scripts'
+        } finally {
+            Unlock-PssScript -Handle @{ LockFile = $lock.File }
+        }
+    }
+}
+
+Describe 'get_run_log tool' {
+    It 'returns a past run log via the logId from get_history' {
+        # 'hello' ran in an earlier Describe — chain history -> log. Newer
+        # rows may be lock-skipped runs (no log), so take the first WITH one.
+        $h = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_history'; arguments = @{ script = 'hello'; limit = 10 } }
+        $run = @(($h.Parsed.result.content[0].text | ConvertFrom-Json).runs |
+            Where-Object { $_.logId }) | Select-Object -First 1
+        $run.logId | Should -Match '\.log$'
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_run_log'; arguments = @{ log_id = $run.logId } }
+        $r.Parsed.result.isError | Should -BeFalse
+        ($r.Parsed.result.content[0].text | ConvertFrom-Json).log | Should -Match 'hello out'
+    }
+    It 'rejects traversal-shaped and unknown ids' {
+        foreach ($bad in '../../etc/passwd.log', '/etc/passwd.log', 'x/y.log', 'no-extension') {
+            $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_run_log'; arguments = @{ log_id = $bad } }
+            $r.Parsed.result.isError | Should -BeTrue
+        }
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_run_log'; arguments = @{ log_id = 'ghost-run.log' } }
+        $r.Parsed.result.isError | Should -BeTrue
+        $r.Parsed.result.content[0].text | Should -Match 'not found'
+    }
+}
+
+Describe 'sync_repos tool' {
+    It 'reports failure with output when no repo is configured' {
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'sync_repos'; arguments = @{} }
+        $r.Parsed.result.isError | Should -BeTrue
+        ($r.Parsed.result.content[0].text | ConvertFrom-Json).output | Should -Match 'repo'
+    }
+}
+
+Describe 'schedule tools' {
+    BeforeAll {
+        # never touch the real crontab from tests
+        Mock Set-PssSchedule { } -ModuleName Mcp
+        Mock Remove-PssSchedule { } -ModuleName Mcp
+        Mock Get-PssSchedules { @{ hello = '*/30 * * * *' } } -ModuleName Mcp
+    }
+    It 'lists schedules with next fire times' {
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_schedules'; arguments = @{} }
+        $s = (($r.Parsed.result.content[0].text | ConvertFrom-Json).schedules)[0]
+        $s.script | Should -Be 'hello'
+        $s.cron | Should -Be '*/30 * * * *'
+        # ConvertFrom-Json parses the ISO string into [datetime] — stringify
+        "$($s.nextRun)" | Should -Not -BeNullOrEmpty
+    }
+    It 'sets a valid schedule and reports the next run' {
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'set_schedule'; arguments = @{ script = 'hello'; cron = '@daily' } }
+        $r.Parsed.result.isError | Should -BeFalse
+        $out = $r.Parsed.result.content[0].text | ConvertFrom-Json
+        $out.cron | Should -Be '@daily'
+        Should -Invoke Set-PssSchedule -ModuleName Mcp -Times 1 -Exactly
+    }
+    It 'rejects an invalid cron expression without writing' {
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'set_schedule'; arguments = @{ script = 'hello'; cron = 'every tuesday' } }
+        $r.Parsed.result.isError | Should -BeTrue
+        $r.Parsed.result.content[0].text | Should -Match '@hourly'
+        Should -Invoke Set-PssSchedule -ModuleName Mcp -Times 0 -Exactly
+    }
+    It 'removes a schedule' {
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'remove_schedule'; arguments = @{ script = 'hello' } }
+        $r.Parsed.result.isError | Should -BeFalse
+        Should -Invoke Remove-PssSchedule -ModuleName Mcp -Times 1 -Exactly
+    }
+}
+
+Describe 'install_deps tool' {
+    It 'reports upToDate for a script with no third-party deps' {
+        $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'install_deps'; arguments = @{ script = 'hello' } }
+        $r.Parsed.result.isError | Should -BeFalse
+        ($r.Parsed.result.content[0].text | ConvertFrom-Json).upToDate | Should -BeTrue
     }
 }

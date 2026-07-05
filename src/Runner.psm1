@@ -58,6 +58,17 @@ function Unlock-PssScript {
     }
 }
 
+# Read-only probe: is this script currently running (live lock)? Never
+# acquires or reclaims — safe to call from status/reporting paths.
+function Test-PssScriptLocked {
+    param([Parameter(Mandatory)][string]$Name)
+    $file = Join-Path (Get-PssPaths).LocksDir "$Name.lock"
+    if (-not (Test-Path $file)) { return $false }
+    $ownerPid = $null
+    try { $ownerPid = [int](Get-Content $file -Raw -ErrorAction Stop).Trim() } catch { }
+    [bool]($ownerPid -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue))
+}
+
 # ---------------------------------------------------------------------------
 # Start a script run (Kind='run') — full pipeline
 # ---------------------------------------------------------------------------
@@ -603,4 +614,4 @@ Export-ModuleMember -Function Start-PssRun, Start-PssTask, Update-PssRun, Test-P
 Measure-PssResources, Stop-PssRun, Complete-PssRun, Invoke-PssRunToCompletion,
 Send-PssWebhook, Send-PssWebhookTest,
 Send-PssWebhookQueue, Get-PssHistory, Get-PssLastStatuses, Get-PssLogTail,
-Lock-PssScript, Unlock-PssScript, Get-PssDownsampledSeries
+Lock-PssScript, Unlock-PssScript, Test-PssScriptLocked, Get-PssDownsampledSeries

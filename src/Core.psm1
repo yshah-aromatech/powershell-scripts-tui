@@ -369,6 +369,35 @@ function Read-PssEnvFile {
     $result
 }
 
+# Documentation-preserving .env.example reader: unlike Read-PssEnvFile, keeps
+# the comment block above each KEY=VALUE as that key's description. Returns
+# a list of @{ Key; Default; Comment }.
+function Read-PssEnvDoc {
+    param([Parameter(Mandatory)][string]$Path)
+    $entries = [System.Collections.Generic.List[object]]::new()
+    if (-not (Test-Path $Path)) { return $entries }
+    $pending = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in (Get-Content $Path -ErrorAction SilentlyContinue)) {
+        $t = "$line".Trim()
+        if (-not $t) { $pending.Clear(); continue }
+        if ($t.StartsWith('#')) {
+            $pending.Add(($t -replace '^#\s?', ''))
+            continue
+        }
+        $idx = $t.IndexOf('=')
+        if ($idx -lt 1) { $pending.Clear(); continue }
+        $key = $t.Substring(0, $idx).Trim()
+        $val = $t.Substring($idx + 1).Trim().Trim('"', "'")
+        $entries.Add([pscustomobject]@{
+                Key     = $key
+                Default = $val
+                Comment = ($pending -join ' ')
+            })
+        $pending.Clear()
+    }
+    $entries
+}
+
 # ---------------------------------------------------------------------------
 # Secret redaction — every secret value is replaced with *** in all output
 # ---------------------------------------------------------------------------
@@ -542,7 +571,7 @@ function Copy-PssClipboard {
 }
 
 Export-ModuleMember -Function Initialize-Pss, Get-PssConfig, Get-PssConfigWarnings, Get-PssScriptsRepo, Get-PssRepos, Add-PssRepoConfig,
-Get-PssPaths, Get-PssAppDir, Get-PssAppVersion, Get-PssTheme, Read-PssEnvFile, Register-PssSecret,
+Get-PssPaths, Get-PssAppDir, Get-PssAppVersion, Get-PssTheme, Read-PssEnvFile, Read-PssEnvDoc, Register-PssSecret,
 Hide-PssSecret, Format-PssDuration, Format-PssRelativeTime, Copy-PssClipboard,
 ConvertTo-AnsiFg, ConvertTo-AnsiBg, ConvertTo-Ansi256Index,
 Get-PssDisplayWidth, Get-PssCodepointWidth, Format-PssCell, Split-PssArguments, Clear-PssOldData

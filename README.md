@@ -202,9 +202,16 @@ A cron or manual run of a script that is already running elsewhere is **skipped*
 
 | Tool | What it does |
 | --- | --- |
-| `list_scripts` | every script with description, last run status and cron schedule |
+| `list_scripts` | every script with runtime (ps/py), repo, description, whether it's running now, last run status/duration and cron schedule |
+| `get_script_details` | everything an agent needs to call a script correctly: README, documented `.env.example` variables, default args, and — for PowerShell — the parsed `param()` block (names, types, mandatory, defaults, `ValidateSet` values, per-parameter comment-based help) |
 | `run_script` | run a script to completion — supports extra `args` (quote-aware string), per-run `env` vars (override the script's `.env`, values redacted like any secret), and a `timeout_minutes` override. Returns status, exit code, duration, redacted output tail and resource stats |
-| `get_history` | recent runs, newest first, optionally filtered to one script |
+| `get_history` | recent runs, newest first, optionally filtered to one script; each row has a `logId` for `get_run_log` |
+| `get_run_log` | fetch the redacted log of any past run by `logId` (default 64KB tail, up to 256KB) |
+| `sync_repos` | git-sync all configured scripts repos |
+| `get_schedules` / `set_schedule` / `remove_schedule` | read and manage cron schedules (5-field expressions or `@daily` etc., validated before writing to the crontab managed block) |
+| `install_deps` | scan + install a script's missing PowerShell modules or python packages into its module dir / venv |
+| `update_app` | `git pull --ff-only` this app (restart the MCP service afterwards) |
+| `update_packages` | upgrade all module dirs + venvs (and apt packages when passwordless sudo is available) — can take minutes, raise the n8n tool timeout for it |
 
 MCP-triggered runs go through the exact same pipeline as manual/cron runs: per-script lock (an already-running script returns `"status": "skipped"`), dep auto-install, log file, history, secret redaction, and the n8n run-report webhook (payload carries `"trigger": "mcp"`).
 
