@@ -55,9 +55,23 @@ function Start-PssTui {
     Update-TuiScripts
     foreach ($w in (Get-PssConfigWarnings)) { Add-TuiOutput @("⚠ $w") }
     if (-not $script:S.Scripts -or $script:S.Scripts.Count -eq 0) {
-        Add-TuiOutput @('no scripts found yet — press s to sync the scripts repo', '')
+        Add-TuiOutput @('⚠ no scripts found yet — press s to sync the scripts repo', '')
     }
-    Add-TuiOutput @("PowerShell Scripts TUI — $($script:S.Scripts.Count) script(s) discovered", 'select a script and press Enter to run it — ? shows all keys')
+    $psN = @($script:S.Scripts | Where-Object { "$($_.Runtime)" -ne 'python' }).Count
+    $pyN = @($script:S.Scripts | Where-Object { "$($_.Runtime)" -eq 'python' }).Count
+    $rtSummary = (@(
+            $(if ($psN) { "$psN pwsh" })
+            $(if ($pyN) { "$pyN python" })
+        ) | Where-Object { $_ }) -join ' · '
+    if (-not $rtSummary) { $rtSummary = '0' }
+    Add-TuiOutput @(
+        "▸ psscripts — $rtSummary script(s) discovered",
+        '',
+        '   enter  run the selected script      v  edit its .env',
+        '   e      schedule it (cron)           s  sync the repos',
+        '   ?      all keybindings',
+        ''
+    )
 
     [Console]::OutputEncoding = [Text.Encoding]::UTF8
     [Console]::TreatControlCAsInput = $true
@@ -1101,7 +1115,7 @@ function Show-TuiFrame {
     # ---- header -----------------------------------------------------------
     # chip-style: only the title carries the accent fill; the rest of the
     # line is transparent with the repo/host info kept muted on the right
-    $title = ' psscripts '
+    $title = ' ▸ psscripts '
     $repoList = @(Get-PssRepos | Where-Object Url)
     $repo = if ($repoList.Count -gt 1) {
         ($repoList | ForEach-Object Name) -join ' + '
@@ -1123,10 +1137,10 @@ function Show-TuiFrame {
     [void]$sb.Append("$reset`e[K`n")
 
     # ---- panel top border --------------------------------------------------
-    $listTitle = if ($script:S.Filter) { " scripts /$($script:S.Filter) " } else { ' scripts ' }
+    $listTitle = if ($script:S.Filter) { " ≡ scripts /$($script:S.Filter) " } else { ' ≡ scripts ' }
     $spin = ''
     if ($script:S.Run) { $spin = $script:SpinnerFrames[$script:S.Tick % $script:SpinnerFrames.Count] + ' ' }
-    $outTitle = " $spin$($script:S.OutTitle) "
+    $outTitle = " ❯ $spin$($script:S.OutTitle) "
     if ($listTitle.Length -gt $lw) { $listTitle = $listTitle.Substring(0, $lw) }
     if ($outTitle.Length -gt $rw) { $outTitle = $outTitle.Substring(0, $rw) }
     # focused pane's title is highlighted (tab switches)
@@ -1249,15 +1263,17 @@ function Get-TuiListRows {
             $nameEnd = "$($t.Reset)$($t.SelBg)"   # drop bold before the age/sched cells
             $lead = "$($t.Blue)▎"                 # accent bar marks the selection
         }
-        # 2-char runtime tag (ps/py) between name and age
-        $rt = if ("$($scr.Runtime)" -eq 'python') { 'py' } else { 'ps' }
+        # 2-char runtime tag between name and age, tinted per language
+        $isPy = ("$($scr.Runtime)" -eq 'python')
+        $rt = if ($isPy) { 'py' } else { 'ps' }
+        $rtColor = if ($idx -eq $sel) { $t.Muted } elseif ($isPy) { $t.Yellow } else { $t.Blue }
         $name = Format-TuiPad -Text $scr.Name -Width ($Width - 12)
         # show why a filtered row matched: highlight the filter substring
         if ($script:S.Filter) {
             $name = [regex]::Replace($name, '(' + [regex]::Escape($script:S.Filter) + ')',
                 "$($t.BrCyan)" + '$1' + $rowFg, 'IgnoreCase')
         }
-        $rows += "$rowBg$lead$badge$rowBg $rowFg$name$nameEnd$($t.Muted)$rt $ageCol$rowBg $sched$rowBg "
+        $rows += "$rowBg$lead$badge$rowBg $rowFg$name$nameEnd$rtColor$rt $ageCol$rowBg $sched$rowBg "
     }
     $rows
 }
@@ -1300,12 +1316,16 @@ function Get-TuiDetailRows {
             $expr = $script:S.Schedules[$sel.Name]
             $cron = "$expr$(Get-TuiNextRunHint -Name $sel.Name -Expression $expr)"
         }
-        $rtName = if (Test-PssPythonScript $sel) { 'python' } else { 'pwsh' }
+        $isPy = Test-PssPythonScript $sel
+        $rtName = if ($isPy) { 'python' } else { 'pwsh' }
+        $rtColor = if ($isPy) { $t.Yellow } else { $t.Blue }
         $repoTag = if ($null -ne $sel.PSObject.Properties['Repo'] -and "$($sel.Repo)") { " · $($sel.Repo)" } else { '' }
-        $pairs += , @('', "$($sel.Name) · $rtName$repoTag", "$($t.Bold)$($t.White)")
-        $pairs += , @('entry:', $entry, $t.Fg)
-        $pairs += , @('env:', "$(if ($envN -gt 0) { "$envN var(s)" } else { '—' }) · $mods", $t.Fg)
-        $pairs += , @('cron:', $cron, $t.Cyan)
+        # 4th element = color for the leading ● (injected after padding —
+        # ANSI codes must never enter width/pad math)
+        $pairs += , @('', "● $($sel.Name) · $rtName$repoTag", "$($t.Bold)$($t.White)", $rtColor)
+        $pairs += , @('▸ entry:', $entry, $t.Fg)
+        $pairs += , @('⚙ env:', "$(if ($envN -gt 0) { "$envN var(s)" } else { '—' }) · $mods", $t.Fg)
+        $pairs += , @('↻ cron:', $cron, $t.Cyan)
         $last = if ($script:S.Statuses.ContainsKey($sel.Name)) { $script:S.Statuses[$sel.Name] } else { $null }
         if ($last) {
             $statusColor = switch ("$($last.Status)") { 'success' { $t.Green } 'failure' { $t.Red } default { $t.BrYellow } }
@@ -1313,15 +1333,15 @@ function Get-TuiDetailRows {
                 'success' { '✓' } 'failure' { '✗' } 'killed' { '⊘' } 'timeout' { '◷' } 'skipped' { '◇' } default { '·' }
             }
             $age = if ($last.At) { " · $(Format-PssRelativeTime ((Get-Date) - $last.At).TotalSeconds) ago" } else { '' }
-            $pairs += , @('last:', "$icon $($last.Status) ($(Format-PssDuration ([double]$last.DurationSec)))$age", $statusColor)
+            $pairs += , @('✦ last:', "$icon $($last.Status) ($(Format-PssDuration ([double]$last.DurationSec)))$age", $statusColor)
             $r = $last.Resources   # absent on records from before this field existed
             if ($r) {
-                $pairs += , @('cpu:', "avg $($r.cpuAvgPercent)% · max $($r.cpuMaxPercent)%", $t.Fg)
-                $pairs += , @('mem:', "avg $($r.memAvgMb)MB · max $($r.memMaxMb)MB", $t.Fg)
+                $pairs += , @('  cpu:', "avg $($r.cpuAvgPercent)% · max $($r.cpuMaxPercent)%", $t.Fg)
+                $pairs += , @('  mem:', "avg $($r.memAvgMb)MB · max $($r.memMaxMb)MB", $t.Fg)
             }
-            if ($last.At) { $pairs += , @('at:', $last.At.ToString('MM-dd HH:mm:ss'), $t.Fg) }
+            if ($last.At) { $pairs += , @('  at:', $last.At.ToString('MM-dd HH:mm:ss'), $t.Fg) }
         } else {
-            $pairs += , @('last:', 'never run', $t.Muted)
+            $pairs += , @('✦ last:', 'never run', $t.Muted)
         }
     } else {
         $pairs += , @('', 'no script selected', $t.Muted)
@@ -1330,10 +1350,15 @@ function Get-TuiDetailRows {
     foreach ($p in $pairs) {
         if ($rows.Count -ge $Count) { break }
         if ($p[0]) {
-            $label = " $($p[0])".PadRight(8)
-            $rows += "$($t.Muted)$label$($p[2])$(Format-TuiPad -Text "$($p[1])" -Width ($Width - 8))"
+            $label = " $($p[0])".PadRight(10)
+            $rows += "$($t.Muted)$label$($p[2])$(Format-TuiPad -Text "$($p[1])" -Width ($Width - 10))"
         } else {
-            $rows += "$($p[2])$(Format-TuiPad -Text " $($p[1])" -Width $Width)"
+            $row = "$($p[2])$(Format-TuiPad -Text " $($p[1])" -Width $Width)"
+            # optional 4th element colors the leading ● without entering pad math
+            if ($p.Count -ge 4 -and $row.Contains('●')) {
+                $row = $row.Replace('●', "$($p[3])●$($p[2])")
+            }
+            $rows += $row
         }
     }
     while ($rows.Count -lt $Count) { $rows += (' ' * $Width) }
@@ -1522,28 +1547,31 @@ function Get-TuiHistoryRows {
 function Get-TuiHelpRows {
     param([int]$Count, [int]$Width)
     $t = Get-PssTheme
+    # ('#', title) rows render as section headers; ('', text) as plain lines
     $entries = @(
-        @('', ''),
+        @('#', '▶ run'),
         @('enter / r', 'run the selected script (deps checked; queued if busy)'),
         @('a', 'run with extra arguments (quotes group words)'),
+        @('x / X', 'kill the running script / clear the run queue'),
+        @('#', '⚙ manage'),
         @('e', 'set/edit/remove the cron schedule'),
         @('v', 'edit the script''s .env (ctrl+s save, esc cancel)'),
-        @('s', 'sync the scripts repo'),
-        @('i', 'scan imports, install missing modules'),
+        @('s', 'sync the scripts repos'),
+        @('i', 'scan imports, install missing modules/packages'),
         @('l', 'lint the script (PSScriptAnalyzer / pyflakes)'),
-        @('u', 'update PowerShell (apt) + upgrade script modules'),
+        @('u', 'update PowerShell + Python (apt), upgrade modules + venvs'),
         @('U', 'update this app (git pull), restart to apply'),
+        @('#', '❯ output & history'),
         @('h', 'run history: enter view log · r re-run · f filter by script'),
-        @('t', 'send a test event to the n8n webhook'),
-        @('x / X', 'kill the running script / clear the run queue'),
         @('y / c', 'copy output to clipboard / clear the output panel'),
-        @('/', 'filter the script list (live, esc restores)'),
         @('ctrl+f', 'search the output — n / N jump to next / prev match'),
-        @('g / G', 'jump to the top / bottom of the list'),
-        @('j / k', 'navigate the list (vim-style)'),
-        @('tab', 'switch pane focus — j/k/g/G scroll the focused pane'),
         @('pgup/pgdn', 'scroll output (end re-engages follow)'),
-        @('mouse', 'wheel scrolls output · click selects a script · click an auth code to copy it'),
+        @('#', '≡ navigate'),
+        @('j / k', 'navigate the list (vim-style) · g / G top / bottom'),
+        @('/', 'filter the script list (live, esc restores)'),
+        @('tab', 'switch pane focus — j/k/g/G scroll the focused pane'),
+        @('mouse', 'wheel scrolls · click selects · click an auth code to copy it'),
+        @('t', 'send a test event to the n8n webhook'),
         @('?', 'this help'),
         @('q', 'quit'),
         @('', ''),
@@ -1554,6 +1582,10 @@ function Get-TuiHelpRows {
     for ($i = 0; $i -lt ($Count - 1); $i++) {
         if ($i -ge $entries.Count) { $rows += (' ' * $Width); continue }
         $e = $entries[$i]
+        if ($e[0] -eq '#') {
+            $rows += "$($t.BrCyan)$(Format-TuiPad -Text " $($e[1])" -Width $Width)"
+            continue
+        }
         $line = Format-TuiPad -Text "  $($e[0].PadRight(11)) $($e[1])" -Width $Width
         # key part magenta, description default
         $rows += "$($t.Magenta)$($line.Substring(0, 13))$($t.Fg)$($line.Substring(13))"
@@ -1608,14 +1640,14 @@ function Get-TuiStatusLine {
         $el = ((Get-Date).ToUniversalTime() - $h.StartedAt).TotalSeconds
         $cpu = if ($h.ContainsKey('CpuNow')) { '{0:n1}' -f $h.CpuNow } else { '—' }
         $mem = if ($h.ContainsKey('MemNow')) { '{0:n0}' -f $h.MemNow } else { '—' }
-        $left = " running $($h.Name)  $(Format-PssDuration $el)  cpu $cpu%  mem ${mem}MB$queueTxt"
+        $left = " ▶ running $($h.Name)  $(Format-PssDuration $el)  cpu $cpu%  mem ${mem}MB$queueTxt"
     } elseif ($script:S.Run) {
         $h = $script:S.Run
         $el = ''
         if ($h.ContainsKey('StartedAt')) {
             $el = "  $(Format-PssDuration ((Get-Date).ToUniversalTime() - $h.StartedAt).TotalSeconds)"
         }
-        $left = " running: $($h.Name)$el$queueTxt"
+        $left = " ▶ running: $($h.Name)$el$queueTxt"
     } elseif (((Get-Date) - $script:S.StatusMsgAt).TotalSeconds -lt 6 -and $script:S.StatusMsg) {
         $icon = switch ("$($script:S.StatusKind)") { 'ok' { '✓ ' } 'err' { '✗ ' } 'warn' { '⚠ ' } default { '' } }
         $left = " $icon$($script:S.StatusMsg)"
