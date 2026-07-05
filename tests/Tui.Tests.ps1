@@ -22,6 +22,8 @@ BeforeAll {
             OutTitle = 'output'; Mode = 'list'
             Input = $null; Confirm = $null; Deps = $null; Env = $null; History = $null
             Run = $null; Queue = [System.Collections.Generic.List[object]]::new()
+            Running = @(); RunningKey = ''; LastLockPoll = [datetime]::MinValue
+            RecentRuns = @(); RecentAt = [datetime]::MinValue
             AfterTask = $null; AfterTaskAlways = $null
             StatusMsg = ''; StatusMsgAt = [datetime]::MinValue
             Tick = 0; LastSample = [datetime]::MinValue
@@ -518,10 +520,11 @@ Describe 'output search' {
             $script:S.Scroll = 0; $script:S.Follow = $true
             $scrolls
         }
-        # body height is 25 (H=30) → matches centered at target-12
-        $r[0] | Should -Be 18   # line 30
-        $r[1] | Should -Be 48   # line 60
-        $r[2] | Should -Be 18   # wraps back to line 30
+        # body 25 (H=30) minus the right-side cards (7 + 2 rules) → a 16-row
+        # output viewport, so matches center at target-8
+        $r[0] | Should -Be 22   # line 30
+        $r[1] | Should -Be 52   # line 60
+        $r[2] | Should -Be 22   # wraps back to line 30
     }
 
     It 'highlights matches in the rendered rows' {

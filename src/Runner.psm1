@@ -69,6 +69,27 @@ function Test-PssScriptLocked {
     [bool]($ownerPid -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue))
 }
 
+# Every script whose lock is held by a live process — catches runs started by
+# this process, cron (--run), the MCP server or another session alike.
+# Read-only like Test-PssScriptLocked: never acquires or reclaims.
+function Get-PssRunningScripts {
+    $dir = (Get-PssPaths).LocksDir
+    if (-not (Test-Path $dir)) { return @() }
+    $out = foreach ($f in @(Get-ChildItem $dir -Filter '*.lock' -File -ErrorAction SilentlyContinue)) {
+        $ownerPid = $null
+        try { $ownerPid = [int](Get-Content $f.FullName -Raw -ErrorAction Stop).Trim() } catch { }
+        if ($ownerPid -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) {
+            [pscustomobject]@{
+                Name      = $f.BaseName          # lock files are "<script>.lock"
+                OwnerPid  = $ownerPid
+                External  = ($ownerPid -ne $PID)
+                StartedAt = $f.LastWriteTime     # lock is created at run start
+            }
+        }
+    }
+    @($out)
+}
+
 # ---------------------------------------------------------------------------
 # Start a script run (Kind='run') — full pipeline
 # ---------------------------------------------------------------------------
@@ -614,4 +635,5 @@ Export-ModuleMember -Function Start-PssRun, Start-PssTask, Update-PssRun, Test-P
 Measure-PssResources, Stop-PssRun, Complete-PssRun, Invoke-PssRunToCompletion,
 Send-PssWebhook, Send-PssWebhookTest,
 Send-PssWebhookQueue, Get-PssHistory, Get-PssLastStatuses, Get-PssLogTail,
-Lock-PssScript, Unlock-PssScript, Test-PssScriptLocked, Get-PssDownsampledSeries
+Lock-PssScript, Unlock-PssScript, Test-PssScriptLocked, Get-PssRunningScripts,
+Get-PssDownsampledSeries

@@ -43,6 +43,31 @@ Describe 'Lock-PssScript / Unlock-PssScript' {
     }
 }
 
+Describe 'Get-PssRunningScripts' {
+    It 'lists live locks and skips stale ones' {
+        $l = Lock-PssScript -Name 'run-live'
+        $stale = Join-Path (Get-PssPaths).LocksDir 'run-stale.lock'
+        '999999' | Set-Content $stale
+        try {
+            $running = @(Get-PssRunningScripts)
+            @($running | ForEach-Object Name) | Should -Contain 'run-live'
+            @($running | ForEach-Object Name) | Should -Not -Contain 'run-stale'
+            $live = $running | Where-Object Name -eq 'run-live'
+            $live.OwnerPid | Should -Be $PID
+            $live.External | Should -BeFalse
+        } finally {
+            Unlock-PssScript -Handle @{ LockFile = $l.File }
+            Remove-Item $stale -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'returns an empty array when nothing holds a live lock' {
+        # earlier lock tests may leave locks behind — clear them first
+        Get-ChildItem (Get-PssPaths).LocksDir -Filter '*.lock' -ErrorAction SilentlyContinue | Remove-Item -Force
+        @(Get-PssRunningScripts).Count | Should -Be 0
+    }
+}
+
 Describe 'Start-PssRun skip behavior' {
     It 'returns a finished skipped handle when the lock is held' {
         $s = [pscustomobject]@{

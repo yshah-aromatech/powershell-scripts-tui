@@ -40,6 +40,11 @@ function Start-PssTui {
         Env          = $null
         History      = $null
         Run          = $null
+        Running      = @()       # live-locked scripts (incl. cron/external) for the activity card
+        RunningKey   = ''
+        LastLockPoll = [datetime]::MinValue
+        RecentRuns   = @()       # cached history tail for the recent-runs card
+        RecentAt     = [datetime]::MinValue
         Queue        = [System.Collections.Generic.List[object]]::new()
         AfterTask    = $null
         AfterTaskAlways = $null
@@ -110,6 +115,23 @@ function Start-PssTui {
             # active run/task
             if ($script:S.Run) { Update-TuiRun }
 
+            # activity card: poll the lock dir every ~2s so runs started outside
+            # this TUI (cron, MCP, another session) show up and clear promptly
+            if (((Get-Date) - $script:S.LastLockPoll).TotalSeconds -ge 2) {
+                $script:S.LastLockPoll = Get-Date
+                $liveRuns = @(Get-PssRunningScripts)
+                $key = @($liveRuns | ForEach-Object { "$($_.Name):$($_.OwnerPid)" }) -join '|'
+                if ($key -ne $script:S.RunningKey) {
+                    $script:S.RunningKey = $key
+                    $script:S.Running = $liveRuns
+                    # an external run starting/finishing also moves the list
+                    # badges and the recent-runs card
+                    $script:S.Statuses = Get-PssLastStatuses
+                    $script:S.RecentAt = [datetime]::MinValue
+                    $script:S.Dirty = $true
+                }
+            }
+
             # drain the run queue
             if (-not $script:S.Run -and $script:S.Queue.Count -gt 0 -and $script:S.Mode -eq 'list') {
                 $next = $script:S.Queue[0]
@@ -118,7 +140,9 @@ function Start-PssTui {
                 $script:S.Dirty = $true
             }
 
-            if ($script:S.Dirty -or $script:S.Run) {
+            # keep redrawing while anything is running (spinners + elapsed
+            # times animate), including cron/external runs in the activity card
+            if ($script:S.Dirty -or $script:S.Run -or @($script:S.Running).Count -gt 0) {
                 Show-TuiFrame
                 $script:S.Dirty = $false
             }
@@ -206,8 +230,9 @@ function Invoke-TuiMouse {
         }
         elseif ($X -ge ($lw + 3)) {
             # output pane: focus it; clicking a device-login code copies it
+            # (clicks on the cards below the output panel select nothing)
             $script:S.FocusPane = 'output'
-            Copy-TuiCodeAt -Row $row -Cell ($X - $lw - 3)
+            if ($row -lt (Get-TuiOutputHeight)) { Copy-TuiCodeAt -Row $row -Cell ($X - $lw - 3) }
         }
     }
 }
@@ -426,6 +451,9 @@ function Update-TuiRun {
                 DurationSec = [double]$result.durationSec
                 Resources   = $result.resources
             }
+            # refresh the right-side cards now, not on their next poll/TTL
+            $script:S.RecentAt = [datetime]::MinValue
+            $script:S.LastLockPoll = [datetime]::MinValue
             Set-TuiStatus "$($result.script): $($result.status)" -Kind $(if ($result.status -eq 'success') { 'ok' } else { 'err' })
         } else {
             $ok = ($h.ExitCode -eq 0)
@@ -617,9 +645,11 @@ function Invoke-TuiWebhookTest {
 }
 
 function Open-TuiHistory {
+    # opens scoped to the highlighted script's own runs; f toggles all scripts
     $items = @(Get-PssHistory -Last 200)
     [array]::Reverse($items)
-    $script:S.History = @{ Items = $items; Sel = 0; Top = 0; FilterName = '' }
+    $sel = Get-TuiSelected
+    $script:S.History = @{ Items = $items; Sel = 0; Top = 0; FilterName = "$(if ($sel) { $sel.Name })" }
     $script:S.Mode = 'history'
 }
 
@@ -763,8 +793,8 @@ function Invoke-TuiKeyList {
         'UpArrow' { Move-TuiSelection -1; return }
         'DownArrow' { Move-TuiSelection 1; return }
         'Enter' { $sel = Get-TuiSelected; if ($sel) { Start-TuiRunFlow -Script $sel }; return }
-        'PageUp' { Move-TuiScroll (-(Get-TuiBodyHeight)); return }
-        'PageDown' { Move-TuiScroll (Get-TuiBodyHeight); return }
+        'PageUp' { Move-TuiScroll (-(Get-TuiOutputHeight)); return }
+        'PageDown' { Move-TuiScroll (Get-TuiOutputHeight); return }
         'Home' { $script:S.Scroll = 0; $script:S.Follow = $false; $script:S.Dirty = $true; return }
         'End' { $script:S.Follow = $true; $script:S.Dirty = $true; return }
     }
@@ -833,7 +863,7 @@ function Move-TuiSelection {
 
 function Move-TuiScroll {
     param([int]$Delta)
-    $maxScroll = [Math]::Max(0, $script:S.Wrapped.Count - (Get-TuiBodyHeight))
+    $maxScroll = [Math]::Max(0, $script:S.Wrapped.Count - (Get-TuiOutputHeight))
     $cur = if ($script:S.Follow) { $maxScroll } else { $script:S.Scroll }
     $script:S.Scroll = [Math]::Min([Math]::Max(0, $cur + $Delta), $maxScroll)
     $script:S.Follow = ($script:S.Scroll -ge $maxScroll)
@@ -852,7 +882,7 @@ function Move-TuiSearch {
         if ($wrapped[$i].Contains($term, [StringComparison]::OrdinalIgnoreCase)) { $hits.Add($i) }
     }
     if ($hits.Count -eq 0) { Set-TuiStatus "no matches for '$term'"; return }
-    $body = Get-TuiBodyHeight
+    $body = Get-TuiOutputHeight
     $maxScroll = [Math]::Max(0, $wrapped.Count - $body)
     $cur = if ($script:S.Follow) { $maxScroll } else { $script:S.Scroll }
     $anchor = $cur + [int]($body / 2)   # the centered line; jumps land matches here
@@ -1048,7 +1078,7 @@ function Invoke-TuiKeyHistory {
         return
     }
     if ($Key.KeyChar -ceq 'f') {
-        # toggle: filter history to the selected run's script
+        # toggle: all scripts <-> just the selected run's script
         if ($hi.FilterName) { $hi.FilterName = '' }
         elseif ($items.Count -gt 0 -and $hi.Sel -le $max) { $hi.FilterName = "$($items[$hi.Sel].script)" }
         $hi.Sel = 0
@@ -1089,6 +1119,26 @@ function Get-TuiDetailHeight {
 function Get-TuiListHeight {
     $dh = Get-TuiDetailHeight
     if ($dh -gt 0) { (Get-TuiBodyHeight) - $dh - 1 } else { Get-TuiBodyHeight }
+}
+
+# right-pane cards under the output panel: activity (anything running, incl.
+# cron/external) and recent app-wide runs — content lines per card
+function Get-TuiActivityHeight { 2 }
+function Get-TuiRecentHeight { 5 }
+
+# both cards' content lines (their 2 separator rows are extra); 0 when an
+# overlay owns the right pane or the terminal is too short to spare the rows
+function Get-TuiRightCardsHeight {
+    if ($script:S.Mode -in 'env', 'history', 'help') { return 0 }
+    $h = (Get-TuiActivityHeight) + (Get-TuiRecentHeight)
+    if ((Get-TuiBodyHeight) -ge ($h + 2 + 7)) { $h } else { 0 }
+}
+
+# output rows above the cards (the full body when they're hidden) — this is
+# the output viewport height every scroll computation must use
+function Get-TuiOutputHeight {
+    $ch = Get-TuiRightCardsHeight
+    if ($ch -gt 0) { (Get-TuiBodyHeight) - $ch - 2 } else { Get-TuiBodyHeight }
 }
 
 function Format-TuiPad {
@@ -1156,31 +1206,53 @@ function Show-TuiFrame {
 
     # ---- body rows ----------------------------------------------------------
     # left column = script list, then (height permitting) a separator and the
-    # details card for the highlighted script; the output pane spans the full body
+    # details card for the highlighted script; right column = output panel,
+    # then (height permitting) the activity and recent-runs cards
     $detailH = Get-TuiDetailHeight
     $listH = Get-TuiListHeight
     $leftRows = Get-TuiListRows -Count $listH -Width $lw
     $detailRows = if ($detailH -gt 0) { Get-TuiDetailRows -Count $detailH -Width $lw } else { @() }
-    $rightRows = Get-TuiOutputRows -Count $body -Width $rw
+    $outH = Get-TuiOutputHeight
+    $rightRows = @(Get-TuiOutputRows -Count $outH -Width $rw)
+    $rightRules = @{}   # body row index -> inset rule title ('' rows below pad the array)
+    if ($outH -lt $body) {
+        $actH = Get-TuiActivityHeight
+        $rightRules[$outH] = ' ⟳ activity '
+        $rightRows += ''
+        $rightRows += @(Get-TuiActivityRows -Count $actH -Width $rw)
+        $rightRules[$outH + $actH + 1] = ' ✦ recent runs '
+        $rightRows += ''
+        $rightRows += @(Get-TuiRecentRows -Count (Get-TuiRecentHeight) -Width $rw)
+    }
     for ($i = 0; $i -lt $body; $i++) {
+        $rule = $rightRules[$i]
         if ($detailH -gt 0 -and $i -eq $listH) {
             # left-only horizontal rule with an inset title, top-border style
             $dTitle = ' details '
+            $mid = if ($rule) { '┼' } else { '┤' }   # rules on both sides may share a row
             [void]$sb.Append("$reset$($t.Muted)├$($t.Blue)$dTitle$($t.Muted)")
             [void]$sb.Append(('─' * [Math]::Max(0, $lw - $dTitle.Length)))
-            [void]$sb.Append("┤$reset")
+            [void]$sb.Append("$mid$reset")
         } else {
+            $mid = if ($rule) { '├' } else { '│' }
             [void]$sb.Append("$reset$($t.Muted)│$reset")
             [void]$sb.Append($(if ($i -lt $listH) { $leftRows[$i] } else { $detailRows[$i - $listH - 1] }))
-            [void]$sb.Append("$reset$($t.Muted)│$reset")
+            [void]$sb.Append("$reset$($t.Muted)$mid$reset")
         }
-        [void]$sb.Append($rightRows[$i])
-        [void]$sb.Append("$reset$($t.Muted)│$reset`e[K`n")
+        if ($rule) {
+            # right-only horizontal rule with an inset title
+            [void]$sb.Append("$($t.Blue)$rule$($t.Muted)")
+            [void]$sb.Append(('─' * [Math]::Max(0, $rw - $rule.Length)))
+            [void]$sb.Append("┤$reset`e[K`n")
+        } else {
+            [void]$sb.Append($rightRows[$i])
+            [void]$sb.Append("$reset$($t.Muted)│$reset`e[K`n")
+        }
     }
 
     # ---- bottom border -----------------------------------------------------
     # scrolled back? say so — new output otherwise accumulates invisibly below
-    $more = Get-TuiMoreBelow -BodyHeight $body
+    $more = Get-TuiMoreBelow -BodyHeight $outH
     $note = if ($more -gt 0) { " ▼ $more more — End follows " } else { '' }
     if ($note -and ($note.Length + 2) -gt $rw) { $note = '' }
     [void]$sb.Append("$reset$($t.Muted)╰$('─' * $lw)┴$('─' * ($rw - $note.Length - $(if ($note) { 1 } else { 0 })))")
@@ -1228,8 +1300,10 @@ function Get-TuiListRows {
     }
     $script:S.ListTop = $top   # mouse clicks map row -> index through this
 
-    # live state trumps last status: spinner on the running script, » on queued
-    $runningName = if ($script:S.Run -and $script:S.Run.Kind -eq 'run') { $script:S.Run.Name } else { $null }
+    # live state trumps last status: spinner on running scripts (own run or a
+    # lock-detected cron/external one), » on queued
+    $runningNames = @($script:S.Running | ForEach-Object Name)
+    if ($script:S.Run -and $script:S.Run.Kind -eq 'run') { $runningNames += $script:S.Run.Name }
     $queuedNames = @($script:S.Queue | ForEach-Object { "$($_.Script.Name)" })
 
     for ($i = 0; $i -lt $Count; $i++) {
@@ -1245,7 +1319,7 @@ function Get-TuiListRows {
             'skipped' { "$($t.BrYellow)◇" }
             default { "$($t.Muted)·" }
         }
-        if ($scr.Name -eq $runningName) {
+        if ($scr.Name -in $runningNames) {
             $badge = "$($t.BrCyan)$($script:SpinnerFrames[$script:S.Tick % $script:SpinnerFrames.Count])"
         } elseif ($scr.Name -in $queuedNames) {
             $badge = "$($t.Cyan)»"
@@ -1360,6 +1434,80 @@ function Get-TuiDetailRows {
             }
             $rows += $row
         }
+    }
+    while ($rows.Count -lt $Count) { $rows += (' ' * $Width) }
+    $rows
+}
+
+# top-right card: anything running right now — from the per-script lock
+# files, so runs launched by cron/MCP/another session show up too
+function Get-TuiActivityRows {
+    param([int]$Count, [int]$Width)
+    $t = Get-PssTheme
+    $rows = @()
+    $running = @($script:S.Running)
+    if ($running.Count -eq 0) {
+        $rows += "$($t.Muted)$(Format-TuiPad -Text ' · idle — nothing running' -Width $Width)"
+    } else {
+        $spin = $script:SpinnerFrames[$script:S.Tick % $script:SpinnerFrames.Count]
+        # if they don't all fit, the last row becomes a "+n more" summary
+        $show = if ($running.Count -gt $Count) { $Count - 1 } else { $running.Count }
+        for ($i = 0; $i -lt $show; $i++) {
+            $r = $running[$i]
+            $src = if ($r.External) { 'cron/external' } else { 'this session' }
+            $el = Format-PssRelativeTime ((Get-Date) - $r.StartedAt).TotalSeconds
+            $rows += "$($t.BrCyan)$(Format-TuiPad -Text " $spin $($r.Name) · running $el · pid $($r.OwnerPid) · $src" -Width $Width)"
+        }
+        if ($running.Count -gt $show) {
+            $rows += "$($t.BrCyan)$(Format-TuiPad -Text "   … +$($running.Count - $show) more running" -Width $Width)"
+        }
+    }
+    if ($script:S.Queue.Count -gt 0 -and $rows.Count -lt $Count) {
+        $rows += "$($t.Cyan)$(Format-TuiPad -Text " » $($script:S.Queue.Count) queued in this session" -Width $Width)"
+    }
+    while ($rows.Count -lt $Count) { $rows += (' ' * $Width) }
+    $rows
+}
+
+# cached tail of history.jsonl for the recent-runs card — TTL'd so redraws
+# during a run (every tick) don't re-read the file; run completion and the
+# lock poll invalidate it via RecentAt
+function Get-TuiRecentRuns {
+    if (((Get-Date) - $script:S.RecentAt).TotalSeconds -lt 3) { return @($script:S.RecentRuns) }
+    $items = @(Get-PssHistory -Last 12)
+    [array]::Reverse($items)
+    $script:S.RecentRuns = $items
+    $script:S.RecentAt = Get-Date
+    @($items)
+}
+
+# bottom-right card: the app's most recent runs across all scripts
+function Get-TuiRecentRows {
+    param([int]$Count, [int]$Width)
+    $t = Get-PssTheme
+    $rows = @()
+    $items = @(Get-TuiRecentRuns | Select-Object -First $Count)
+    if ($items.Count -eq 0) {
+        $rows += "$($t.Muted)$(Format-TuiPad -Text ' (no runs yet)' -Width $Width)"
+    }
+    $nameW = [Math]::Max(10, [Math]::Min(28, $Width - 26))
+    foreach ($h in $items) {
+        $status = "$($h.status)"
+        # killed/timeout both read as "stopped" here — the history page has detail
+        $word = if ($status -in 'killed', 'timeout') { 'stopped' } else { $status }
+        $icon = switch ($status) {
+            'success' { '✓' } 'failure' { '✗' } 'killed' { '⊘' } 'timeout' { '◷' } 'skipped' { '◇' } default { '·' }
+        }
+        $color = switch ($status) { 'success' { $t.Green } 'failure' { $t.Red } default { $t.BrYellow } }
+        $rt = if ("$($h.runtime)" -eq 'python') { 'py' } else { 'ps' }
+        # ConvertFrom-Json yields Kind=Utc for the trailing-Z timestamps —
+        # normalize to local before subtracting from Get-Date
+        $started = $h.startedAt -as [datetime]
+        if ($started) { $started = $started.ToLocalTime() }
+        $age = if ($started) { "$(Format-PssRelativeTime ((Get-Date) - $started).TotalSeconds) ago" } else { '' }
+        $line = ' {0} {1} {2}  {3,-7} {4}' -f $icon,
+        (Format-PssCell -Text "$($h.script)" -Width $nameW -Ellipsis), $rt, $word, $age
+        $rows += "$color$(Format-TuiPad -Text $line -Width $Width)"
     }
     while ($rows.Count -lt $Count) { $rows += (' ' * $Width) }
     $rows
@@ -1491,8 +1639,8 @@ function Get-TuiHistoryRows {
     $hi = $script:S.History
     $items = Get-TuiHistoryItems
     $rows = @()
-    $filterTxt = if ($hi.FilterName) { " · filtered: $($hi.FilterName) (f clears)" } else { '' }
-    $rows += "$($t.SelBg)$($t.White)$(Format-TuiPad -Text " run history (newest first)$filterTxt — enter view log · r re-run · f filter · esc close" -Width $Width)"
+    $scopeTxt = if ($hi.FilterName) { "$($hi.FilterName) · f = all scripts" } else { 'all scripts · f = just one' }
+    $rows += "$($t.SelBg)$($t.White)$(Format-TuiPad -Text " run history — $scopeTxt — enter view log · r re-run · esc close" -Width $Width)"
 
     # script column sized to the longest name on file (clamped) so long names
     # can't shear the columns to their right; anything longer is ellipsized
@@ -1515,7 +1663,9 @@ function Get-TuiHistoryRows {
     for ($i = 0; $i -lt $visible; $i++) {
         $idx = $top + $i
         if ($idx -ge $items.Count) {
-            $text = if ($items.Count -eq 0 -and $i -eq 0) { ' (no runs yet)' } else { '' }
+            $text = if ($items.Count -eq 0 -and $i -eq 0) {
+                if ($hi.FilterName) { " (no runs yet for $($hi.FilterName))" } else { ' (no runs yet)' }
+            } else { '' }
             $rows += "$($t.Muted)$(Format-TuiPad -Text $text -Width $Width)"
             continue
         }
@@ -1523,9 +1673,11 @@ function Get-TuiHistoryRows {
         $color = switch ("$($h.status)") {
             'success' { $t.Green } 'failure' { $t.Red } default { $t.BrYellow }
         }
-        # ConvertFrom-Json turns ISO strings into [datetime] — format both a
-        # compact absolute time and a glanceable age from that
+        # ConvertFrom-Json turns ISO strings into [datetime] (Kind=Utc from the
+        # trailing Z) — normalize to local, then format both a compact
+        # absolute time and a glanceable age from that
         $started = $h.startedAt -as [datetime]
+        if ($started) { $started = $started.ToLocalTime() }
         $when = if ($started) { $started.ToString('MM-dd HH:mm') } else { "$($h.startedAt)" }
         $age = if ($started) { Format-PssRelativeTime ((Get-Date) - $started).TotalSeconds } else { '' }
         $res = $h.resources
@@ -1562,7 +1714,7 @@ function Get-TuiHelpRows {
         @('u', 'update PowerShell + Python (apt), upgrade modules + venvs'),
         @('U', 'update this app (git pull), restart to apply'),
         @('#', '❯ output & history'),
-        @('h', 'run history: enter view log · r re-run · f filter by script'),
+        @('h', 'selected script''s history: enter view log · r re-run · f all scripts'),
         @('y / c', 'copy output to clipboard / clear the output panel'),
         @('ctrl+f', 'search the output — n / N jump to next / prev match'),
         @('pgup/pgdn', 'scroll output (end re-engages follow)'),
@@ -1688,7 +1840,7 @@ function Get-TuiKeyHints {
     # editor is open would advertise bindings that don't work there
     $pairs = switch ($script:S.Mode) {
         'history' {
-            @(@('enter', 'view log'), @('r', 're-run'), @('f', 'filter script'), @('j/k', 'navigate'),
+            @(@('enter', 'view log'), @('r', 're-run'), @('f', 'one/all scripts'), @('j/k', 'navigate'),
                 @('pgup/pgdn', 'page'), @('esc', 'close'))
         }
         'env' {

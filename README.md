@@ -18,7 +18,8 @@ Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/d
 - **Run queue** — starting a script while another is running queues it; runs drain in order (`X` clears the queue)
 - **Linting** — `l` runs PSScriptAnalyzer against the selected script (installed automatically on first use)
 - **System maintenance** — update PowerShell via apt, upgrade all modules in every script's module dir, and update this app itself (`U` = git pull), from inside the TUI
-- **Extras** — run history viewer (open any past run's log, filter by script), kill running script, webhook test event, global + per-script run timeout, output scrollback, secret redaction in all output, live script filtering, run with ad-hoc arguments (quote-aware), mouse support, log/history retention, 256-color fallback for terminals without truecolor
+- **Activity & recent-runs cards** — two cards under the output panel: *activity* shows every script running right now (detected via the per-script locks, so cron/MCP/other-session runs appear too, live), and *recent runs* lists the app's latest runs (script, runtime, success/failure/stopped)
+- **Extras** — per-script run history viewer (open any past run's log, `f` switches to all scripts), kill running script, webhook test event, global + per-script run timeout, output scrollback, secret redaction in all output, live script filtering, run with ad-hoc arguments (quote-aware), mouse support, log/history retention, 256-color fallback for terminals without truecolor
 
 ## Keybindings
 
@@ -36,7 +37,7 @@ Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/d
 | `l` | lint the selected script (PSScriptAnalyzer for `.ps1`, pyflakes — auto-installed — for `.py`) |
 | `u` | update PowerShell + Python (apt) + upgrade all module dirs and venvs |
 | `U` | update this app (`git pull --ff-only`; restart to apply) |
-| `h` | run history: `↑`/`↓` select, `Enter` opens that run's log, `r` re-runs that script, `f` filters to the selected script |
+| `h` | run history for the selected script: `↑`/`↓` select, `Enter` opens that run's log, `r` re-runs that script, `f` toggles all scripts |
 | `t` | send a test event to the n8n webhook |
 | `x` / `X` | kill the running script / clear the run queue |
 | `y` | copy the whole output to the clipboard |
