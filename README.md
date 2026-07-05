@@ -186,26 +186,13 @@ MCP-triggered runs go through the exact same pipeline as manual/cron runs: per-s
 
 1. Generate a token and put it in `.env` next to the app: `MCP_AUTH_TOKEN=$(openssl rand -hex 32)`. The server refuses to start without one; every request must send it as a Bearer token.
 2. Optionally set `mcpPort` (default `8765`) and `mcpBind` (`all` = LAN-reachable, `localhost`) in `config.json`.
-3. Run `psscripts --mcp`, or install it as a systemd user service so it survives reboots (do **not** add it to the crontab managed block — that block is regenerated from schedules and foreign lines are dropped):
-
-```ini
-# ~/.config/systemd/user/psscripts-mcp.service
-[Unit]
-Description=psscripts MCP server
-
-[Service]
-ExecStart=/usr/bin/pwsh -NoProfile -File %h/powershell-scripts-tui/psscripts.ps1 --mcp
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
+3. Install it as a systemd service so it runs at boot, with no terminal open:
 
 ```bash
-systemctl --user daemon-reload && systemctl --user enable --now psscripts-mcp
-loginctl enable-linger $USER    # keep it running with no session open
+psscripts --install-mcp-service
 ```
+
+Run as root this writes a system unit (`/etc/systemd/system/psscripts-mcp.service`); as a normal user it writes a user unit + enables lingering, so it survives logout and reboots either way. Check with `systemctl status psscripts-mcp` (add `--user` for the user variant); logs via `journalctl -u psscripts-mcp -f`. Re-run the command after changing `mcpPort`/`mcpBind`. For a quick foreground session instead, `psscripts --mcp` works too. (Don't put `--mcp` in the crontab managed block — that block is regenerated from schedules and foreign lines are dropped.)
 
 4. In n8n: add an **AI Agent** node, attach an **MCP Client Tool** sub-node with Endpoint `http://<server-ip>:8765/mcp`, Server Transport **HTTP Streamable**, and a **Bearer** credential holding the token. The agent will discover the three tools automatically.
 

@@ -169,6 +169,16 @@ Describe 'run_script tool' {
     }
 }
 
+Describe 'Get-PssMcpServiceUnit' {
+    It 'generates a valid systemd unit pointing at the app' {
+        $u = Get-PssMcpServiceUnit -AppDir '/opt/pss' -PwshPath '/usr/bin/pwsh'
+        $u | Should -Match '(?m)^ExecStart=/usr/bin/pwsh -NoProfile -File /opt/pss/psscripts\.ps1 --mcp$'
+        $u | Should -Match '(?m)^WorkingDirectory=/opt/pss$'
+        $u | Should -Match '(?m)^Restart=on-failure$'
+        $u | Should -Match '(?m)^WantedBy=default\.target$'
+    }
+}
+
 Describe 'get_history tool' {
     It 'returns recent runs newest-first and honors the script filter' {
         $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_history'; arguments = @{ script = 'hello'; limit = 5 } }

@@ -9,6 +9,7 @@
 #   psscripts --sync          sync the scripts repo and exit
 #   psscripts --history [name]        print recent runs (optionally one script)
 #   psscripts --mcp [--port <n>]      serve the MCP server (for n8n AI agents)
+#   psscripts --install-mcp-service   install + start the MCP server as a systemd service
 #   psscripts --help
 
 $ErrorActionPreference = 'Stop'
@@ -31,6 +32,7 @@ $syncOnly = $false
 $historyOnly = $false
 $historyName = $null
 $mcpOnly = $false
+$mcpInstall = $false
 $mcpPortOverride = 0
 $showHelp = $false
 for ($i = 0; $i -lt $args.Count; $i++) {
@@ -42,6 +44,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '--sync' { $syncOnly = $true }
         '--mcp' { $mcpOnly = $true }
         '--port' { $mcpPortOverride = [int]$args[$i + 1]; $i++ }
+        '--install-mcp-service' { $mcpInstall = $true }
         '--history' {
             $historyOnly = $true
             if ($i + 1 -lt $args.Count -and "$($args[$i + 1])" -notlike '--*') { $historyName = "$($args[$i + 1])"; $i++ }
@@ -53,8 +56,18 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 foreach ($w in (Get-PssConfigWarnings)) { Write-Warning $w }
 
 if ($showHelp) {
-    Get-Content $PSCommandPath | Select-Object -Skip 1 -First 12 | ForEach-Object { $_ -replace '^#\s?', '' }
+    Get-Content $PSCommandPath | Select-Object -Skip 1 -First 13 | ForEach-Object { $_ -replace '^#\s?', '' }
     exit 0
+}
+
+if ($mcpInstall) {
+    try {
+        Install-PssMcpService
+        exit 0
+    } catch {
+        Write-Error $_.Exception.Message
+        exit 1
+    }
 }
 
 if ($mcpOnly) {

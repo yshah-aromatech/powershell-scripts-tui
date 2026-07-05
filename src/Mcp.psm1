@@ -311,6 +311,65 @@ function Start-PssMcpServer {
     }
 }
 
+# ---------------------------------------------------------------------------
+# systemd service install (`--install-mcp-service`) — so the server runs at
+# boot without a terminal. Root gets a system unit; a normal user gets a user
+# unit + lingering. Unit generation is pure for testability.
+# ---------------------------------------------------------------------------
+function Get-PssMcpServiceUnit {
+    param(
+        [Parameter(Mandatory)][string]$AppDir,
+        [Parameter(Mandatory)][string]$PwshPath
+    )
+    @"
+[Unit]
+Description=psscripts MCP server
+After=network.target
+
+[Service]
+ExecStart=$PwshPath -NoProfile -File $AppDir/psscripts.ps1 --mcp
+WorkingDirectory=$AppDir
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"@
+}
+
+function Install-PssMcpService {
+    if (-not $IsLinux) { throw '--install-mcp-service needs systemd (Linux only)' }
+    if (-not $env:MCP_AUTH_TOKEN) {
+        throw 'MCP_AUTH_TOKEN is not set — add it to .env next to the app first (the service would just crash-loop without it)'
+    }
+    $appDir = Get-PssAppDir
+    $pwshPath = [Environment]::ProcessPath
+    $unit = Get-PssMcpServiceUnit -AppDir $appDir -PwshPath $pwshPath
+
+    $isRoot = (& id -u) -eq '0'
+    if ($isRoot) {
+        $unitFile = '/etc/systemd/system/psscripts-mcp.service'
+        $unit | Set-Content -Path $unitFile -Encoding UTF8
+        & systemctl daemon-reload
+        & systemctl enable --now psscripts-mcp
+        Write-Host "installed + started system service: $unitFile"
+        Write-Host 'check:   systemctl status psscripts-mcp'
+        Write-Host 'logs:    journalctl -u psscripts-mcp -f'
+    } else {
+        $unitDir = Join-Path $HOME '.config/systemd/user'
+        if (-not (Test-Path $unitDir)) { New-Item -ItemType Directory -Path $unitDir -Force | Out-Null }
+        $unitFile = Join-Path $unitDir 'psscripts-mcp.service'
+        $unit | Set-Content -Path $unitFile -Encoding UTF8
+        & systemctl --user daemon-reload
+        & systemctl --user enable --now psscripts-mcp
+        # keep the user manager (and the service) alive with no session open
+        & loginctl enable-linger $env:USER
+        Write-Host "installed + started user service: $unitFile"
+        Write-Host 'check:   systemctl --user status psscripts-mcp'
+        Write-Host 'logs:    journalctl --user -u psscripts-mcp -f'
+    }
+}
+
 # Handles one HTTP exchange; returns the status code for the request log.
 function Write-PssMcpResponse {
     param($Context, [string]$Token)
@@ -354,4 +413,5 @@ function Write-PssMcpResponse {
     & $sendText ([int]$r.StatusCode) $r.Json
 }
 
-Export-ModuleMember -Function Start-PssMcpServer, Invoke-PssMcpRequest, Get-PssMcpTools, Invoke-PssMcpTool
+Export-ModuleMember -Function Start-PssMcpServer, Invoke-PssMcpRequest, Get-PssMcpTools, Invoke-PssMcpTool,
+Get-PssMcpServiceUnit, Install-PssMcpService
