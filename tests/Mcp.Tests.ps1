@@ -174,6 +174,7 @@ Describe 'Get-PssMcpServiceUnit' {
         $u = Get-PssMcpServiceUnit -AppDir '/opt/pss' -PwshPath '/usr/bin/pwsh'
         $u | Should -Match '(?m)^ExecStart=/usr/bin/pwsh -NoProfile -File /opt/pss/psscripts\.ps1 --mcp$'
         $u | Should -Match '(?m)^WorkingDirectory=/opt/pss$'
+        $u | Should -Match '(?m)^Environment=HOME=%h$'
         $u | Should -Match '(?m)^Restart=on-failure$'
         $u | Should -Match '(?m)^WantedBy=default\.target$'
     }

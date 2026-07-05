@@ -329,6 +329,9 @@ After=network.target
 [Service]
 ExecStart=$PwshPath -NoProfile -File $AppDir/psscripts.ps1 --mcp
 WorkingDirectory=$AppDir
+# system units without User= don't set HOME, and the app expands ~/.psscripts
+# with it — %h is the service manager's home (/root for the system manager)
+Environment=HOME=%h
 Restart=on-failure
 RestartSec=5
 
@@ -351,7 +354,8 @@ function Install-PssMcpService {
         $unitFile = '/etc/systemd/system/psscripts-mcp.service'
         $unit | Set-Content -Path $unitFile -Encoding UTF8
         & systemctl daemon-reload
-        & systemctl enable --now psscripts-mcp
+        & systemctl enable psscripts-mcp
+        & systemctl restart psscripts-mcp   # restart (not enable --now) so re-runs apply changes
         Write-Host "installed + started system service: $unitFile"
         Write-Host 'check:   systemctl status psscripts-mcp'
         Write-Host 'logs:    journalctl -u psscripts-mcp -f'
@@ -361,7 +365,8 @@ function Install-PssMcpService {
         $unitFile = Join-Path $unitDir 'psscripts-mcp.service'
         $unit | Set-Content -Path $unitFile -Encoding UTF8
         & systemctl --user daemon-reload
-        & systemctl --user enable --now psscripts-mcp
+        & systemctl --user enable psscripts-mcp
+        & systemctl --user restart psscripts-mcp   # restart (not enable --now) so re-runs apply changes
         # keep the user manager (and the service) alive with no session open
         & loginctl enable-linger $env:USER
         Write-Host "installed + started user service: $unitFile"
