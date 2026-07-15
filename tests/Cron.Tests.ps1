@@ -7,8 +7,30 @@ BeforeAll {
 Describe 'Test-PssCronExpression' {
     It 'accepts 5-field expressions' { Test-PssCronExpression '*/15 * * * *' | Should -BeTrue }
     It 'accepts @keywords' { Test-PssCronExpression '@daily' | Should -BeTrue }
+    It 'accepts month/dow names' { Test-PssCronExpression '0 8 * * mon-fri' | Should -BeTrue }
     It 'rejects wrong field counts' { Test-PssCronExpression '* * * *' | Should -BeFalse }
     It 'rejects free text' { Test-PssCronExpression 'every day at 8' | Should -BeFalse }
+    It 'rejects 5-word free text' { Test-PssCronExpression 'every day at five pm' | Should -BeFalse }
+    It 'rejects out-of-range values' { Test-PssCronExpression '99 * * * *' | Should -BeFalse }
+    It 'rejects names in numeric fields' { Test-PssCronExpression '* * * * banana' | Should -BeFalse }
+}
+
+Describe 'Convert-PssToCron' {
+    It 'passes literal cron through without the AI' {
+        $r = Convert-PssToCron '*/5 * * * *'
+        $r.Expression | Should -Be '*/5 * * * *'
+        $r.Source | Should -Be 'literal'
+    }
+    It 'routes 5-word English to the AI path (errors without a key)' {
+        $saved = $env:OPENROUTER_API_KEY
+        try {
+            $env:OPENROUTER_API_KEY = ''
+            $r = Convert-PssToCron 'every day at five pm'
+            $r.Expression | Should -Be $null
+            $r.Source | Should -Be 'ai'
+            $r.Error | Should -Match 'OPENROUTER_API_KEY'
+        } finally { $env:OPENROUTER_API_KEY = $saved }
+    }
 }
 
 Describe 'ConvertFrom-PssCronField' {

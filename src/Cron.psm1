@@ -192,10 +192,13 @@ function Test-PssCronExpression {
     if ($e -match '^@(hourly|daily|weekly|monthly|yearly|annually|reboot|midnight)$') { return $true }
     $fields = $e -split '\s+'
     if ($fields.Count -ne 5) { return $false }
-    foreach ($f in $fields) {
-        if ($f -notmatch '^[\d\*/,\-A-Za-z]+$') { return $false }
-    }
-    $true
+    # parse every field with the same parser Get-PssCronNext uses — a charset
+    # check isn't enough ("every day at five pm" is 5 fields of letters)
+    $null -ne (ConvertFrom-PssCronField $fields[0] 0 59) -and
+    $null -ne (ConvertFrom-PssCronField $fields[1] 0 23) -and
+    $null -ne (ConvertFrom-PssCronField $fields[2] 1 31) -and
+    $null -ne (ConvertFrom-PssCronField $fields[3] 1 12 $script:CronMonthNames) -and
+    $null -ne (ConvertFrom-PssCronField $fields[4] 0 7 $script:CronDowNames)
 }
 
 # Returns @{ Expression; Source = 'literal'|'ai'; Error }
@@ -221,11 +224,16 @@ function Convert-PssToCron {
         $resp = Invoke-RestMethod -Method Post -Uri 'https://openrouter.ai/api/v1/chat/completions' `
             -Headers @{ Authorization = "Bearer $apiKey" } -ContentType 'application/json' `
             -Body $body -TimeoutSec 30
-        $expr = "$($resp.choices[0].message.content)".Trim() -replace '`', ''
-        if (Test-PssCronExpression $expr) {
-            return @{ Expression = $expr; Source = 'ai'; Error = $null }
+        $raw = "$($resp.choices[0].message.content)" -replace '`', ''
+        # models sometimes fence the answer or append prose — take the first
+        # line that validates as a cron expression
+        foreach ($line in ($raw -split '\r?\n')) {
+            $expr = $line.Trim()
+            if ($expr -and (Test-PssCronExpression $expr)) {
+                return @{ Expression = $expr; Source = 'ai'; Error = $null }
+            }
         }
-        return @{ Expression = $null; Source = 'ai'; Error = "model returned something that isn't a cron expression: $expr" }
+        return @{ Expression = $null; Source = 'ai'; Error = "model returned something that isn't a cron expression: $($raw.Trim())" }
     } catch {
         return @{ Expression = $null; Source = 'ai'; Error = "OpenRouter request failed: $($_.Exception.Message)" }
     }
