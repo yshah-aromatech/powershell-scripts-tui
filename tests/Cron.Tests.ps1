@@ -4,20 +4,20 @@ BeforeAll {
     $script:from = [datetime]::new(2026, 7, 3, 14, 30, 45)   # Friday
 }
 
-Describe 'Test-PssCronExpression' {
-    It 'accepts 5-field expressions' { Test-PssCronExpression '*/15 * * * *' | Should -BeTrue }
-    It 'accepts @keywords' { Test-PssCronExpression '@daily' | Should -BeTrue }
-    It 'accepts month/dow names' { Test-PssCronExpression '0 8 * * mon-fri' | Should -BeTrue }
-    It 'rejects wrong field counts' { Test-PssCronExpression '* * * *' | Should -BeFalse }
-    It 'rejects free text' { Test-PssCronExpression 'every day at 8' | Should -BeFalse }
-    It 'rejects 5-word free text' { Test-PssCronExpression 'every day at five pm' | Should -BeFalse }
-    It 'rejects out-of-range values' { Test-PssCronExpression '99 * * * *' | Should -BeFalse }
-    It 'rejects names in numeric fields' { Test-PssCronExpression '* * * * banana' | Should -BeFalse }
+Describe 'Test-StoCronExpression' {
+    It 'accepts 5-field expressions' { Test-StoCronExpression '*/15 * * * *' | Should -BeTrue }
+    It 'accepts @keywords' { Test-StoCronExpression '@daily' | Should -BeTrue }
+    It 'accepts month/dow names' { Test-StoCronExpression '0 8 * * mon-fri' | Should -BeTrue }
+    It 'rejects wrong field counts' { Test-StoCronExpression '* * * *' | Should -BeFalse }
+    It 'rejects free text' { Test-StoCronExpression 'every day at 8' | Should -BeFalse }
+    It 'rejects 5-word free text' { Test-StoCronExpression 'every day at five pm' | Should -BeFalse }
+    It 'rejects out-of-range values' { Test-StoCronExpression '99 * * * *' | Should -BeFalse }
+    It 'rejects names in numeric fields' { Test-StoCronExpression '* * * * banana' | Should -BeFalse }
 }
 
-Describe 'Convert-PssToCron' {
+Describe 'Convert-StoToCron' {
     It 'passes literal cron through without the AI' {
-        $r = Convert-PssToCron '*/5 * * * *'
+        $r = Convert-StoToCron '*/5 * * * *'
         $r.Expression | Should -Be '*/5 * * * *'
         $r.Source | Should -Be 'literal'
     }
@@ -25,7 +25,7 @@ Describe 'Convert-PssToCron' {
         $saved = $env:OPENROUTER_API_KEY
         try {
             $env:OPENROUTER_API_KEY = ''
-            $r = Convert-PssToCron 'every day at five pm'
+            $r = Convert-StoToCron 'every day at five pm'
             $r.Expression | Should -Be $null
             $r.Source | Should -Be 'ai'
             $r.Error | Should -Match 'OPENROUTER_API_KEY'
@@ -33,50 +33,71 @@ Describe 'Convert-PssToCron' {
     }
 }
 
-Describe 'ConvertFrom-PssCronField' {
-    It 'expands *' { ConvertFrom-PssCronField '*' 0 3 | Should -Be @(0, 1, 2, 3) }
-    It 'expands steps' { ConvertFrom-PssCronField '*/15' 0 59 | Should -Be @(0, 15, 30, 45) }
-    It 'expands ranges' { ConvertFrom-PssCronField '2-4' 0 59 | Should -Be @(2, 3, 4) }
-    It 'expands lists' { ConvertFrom-PssCronField '1,5,9' 0 59 | Should -Be @(1, 5, 9) }
-    It 'expands value/step to value..max' { ConvertFrom-PssCronField '50/5' 0 59 | Should -Be @(50, 55) }
-    It 'resolves names' { ConvertFrom-PssCronField 'mon-wed' 0 7 @{ mon = 1; tue = 2; wed = 3 } | Should -Be @(1, 2, 3) }
-    It 'returns null for out-of-range values' { ConvertFrom-PssCronField '99' 0 59 | Should -Be $null }
-    It 'returns null for garbage' { ConvertFrom-PssCronField 'nope' 0 59 | Should -Be $null }
+Describe 'ConvertFrom-StoCronField' {
+    It 'expands *' { ConvertFrom-StoCronField '*' 0 3 | Should -Be @(0, 1, 2, 3) }
+    It 'expands steps' { ConvertFrom-StoCronField '*/15' 0 59 | Should -Be @(0, 15, 30, 45) }
+    It 'expands ranges' { ConvertFrom-StoCronField '2-4' 0 59 | Should -Be @(2, 3, 4) }
+    It 'expands lists' { ConvertFrom-StoCronField '1,5,9' 0 59 | Should -Be @(1, 5, 9) }
+    It 'expands value/step to value..max' { ConvertFrom-StoCronField '50/5' 0 59 | Should -Be @(50, 55) }
+    It 'resolves names' { ConvertFrom-StoCronField 'mon-wed' 0 7 @{ mon = 1; tue = 2; wed = 3 } | Should -Be @(1, 2, 3) }
+    It 'returns null for out-of-range values' { ConvertFrom-StoCronField '99' 0 59 | Should -Be $null }
+    It 'returns null for garbage' { ConvertFrom-StoCronField 'nope' 0 59 | Should -Be $null }
 }
 
-Describe 'Get-PssCronNext' {
+Describe 'legacy (psscripts) crontab markers' {
+    It 'reads schedules written under the pre-rename markers' {
+        Mock Get-StoCrontabLines -ModuleName Cron {
+            @('# >>> psscripts managed block — do not edit by hand >>>',
+                "0 3 * * * cd '/opt/app' && 'pwsh' -NoProfile -File psscripts.ps1 --run 'backup-db' --cron >> '/tmp/x.log' 2>&1",
+                '# <<< psscripts managed block <<<')
+        }
+        $s = Get-StoSchedules
+        $s['backup-db'] | Should -Be '0 3 * * *'
+    }
+    It 'recognizes both marker generations, and only markers' {
+        InModuleScope Cron {
+            Test-StoBlockStart '# >>> scriptorium managed block — do not edit by hand >>>' | Should -BeTrue
+            Test-StoBlockStart '# >>> psscripts managed block — do not edit by hand >>>' | Should -BeTrue
+            Test-StoBlockEnd '# <<< scriptorium managed block <<<' | Should -BeTrue
+            Test-StoBlockEnd '# <<< psscripts managed block <<<' | Should -BeTrue
+            Test-StoBlockStart 'MAILTO=me@example.com' | Should -BeFalse
+        }
+    }
+}
+
+Describe 'Get-StoCronNext' {
     It 'finds the next step boundary' {
-        Get-PssCronNext '*/15 * * * *' $from | Should -Be ([datetime]::new(2026, 7, 3, 14, 45, 0))
+        Get-StoCronNext '*/15 * * * *' $from | Should -Be ([datetime]::new(2026, 7, 3, 14, 45, 0))
     }
     It 'rolls to the next day for @daily' {
-        Get-PssCronNext '@daily' $from | Should -Be ([datetime]::new(2026, 7, 4, 0, 0, 0))
+        Get-StoCronNext '@daily' $from | Should -Be ([datetime]::new(2026, 7, 4, 0, 0, 0))
     }
     It 'honors day-of-week names' {
-        Get-PssCronNext '0 20 * * sat' $from | Should -Be ([datetime]::new(2026, 7, 4, 20, 0, 0))
+        Get-StoCronNext '0 20 * * sat' $from | Should -Be ([datetime]::new(2026, 7, 4, 20, 0, 0))
     }
     It 'honors day-of-month' {
-        Get-PssCronNext '30 8 1 * *' $from | Should -Be ([datetime]::new(2026, 8, 1, 8, 30, 0))
+        Get-StoCronNext '30 8 1 * *' $from | Should -Be ([datetime]::new(2026, 8, 1, 8, 30, 0))
     }
     It 'finds leap-year Feb 29' {
-        Get-PssCronNext '0 0 29 2 *' $from | Should -Be ([datetime]::new(2028, 2, 29, 0, 0, 0))
+        Get-StoCronNext '0 0 29 2 *' $from | Should -Be ([datetime]::new(2028, 2, 29, 0, 0, 0))
     }
     It 'applies the vixie dom/dow union rule' {
         # next monday (jul 6) comes before the 15th
-        Get-PssCronNext '0 12 1,15 * mon' $from | Should -Be ([datetime]::new(2026, 7, 6, 12, 0, 0))
+        Get-StoCronNext '0 12 1,15 * mon' $from | Should -Be ([datetime]::new(2026, 7, 6, 12, 0, 0))
     }
     It 'fires this minute + 1 at the earliest' {
-        (Get-PssCronNext '* * * * *' $from) | Should -Be ([datetime]::new(2026, 7, 3, 14, 31, 0))
+        (Get-StoCronNext '* * * * *' $from) | Should -Be ([datetime]::new(2026, 7, 3, 14, 31, 0))
     }
     It 'returns null for @reboot' {
-        Get-PssCronNext '@reboot' $from | Should -Be $null
+        Get-StoCronNext '@reboot' $from | Should -Be $null
     }
     It 'returns null for unparseable expressions' {
-        Get-PssCronNext 'not a cron' $from | Should -Be $null
+        Get-StoCronNext 'not a cron' $from | Should -Be $null
     }
     It 'returns null for impossible dates' {
-        Get-PssCronNext '0 0 31 2 *' $from | Should -Be $null
+        Get-StoCronNext '0 0 31 2 *' $from | Should -Be $null
     }
     It 'treats 7 as sunday' {
-        Get-PssCronNext '0 9 * * 7' $from | Should -Be ([datetime]::new(2026, 7, 5, 9, 0, 0))
+        Get-StoCronNext '0 9 * * 7' $from | Should -Be ([datetime]::new(2026, 7, 5, 9, 0, 0))
     }
 }

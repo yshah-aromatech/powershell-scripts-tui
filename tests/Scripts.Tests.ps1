@@ -7,8 +7,8 @@ BeforeAll {
     New-Item -ItemType Directory -Path $script:appDir -Force | Out-Null
     @{ dataDir = (Join-Path $script:appDir 'data') } | ConvertTo-Json |
         Set-Content (Join-Path $script:appDir 'config.json')
-    Initialize-Pss -AppDir $script:appDir
-    $script:root = (Get-PssPaths).ScriptsDir
+    Initialize-Sto -AppDir $script:appDir
+    $script:root = (Get-StoPaths).ScriptsDir
     New-Item -ItemType Directory -Path $script:root -Force | Out-Null
 }
 
@@ -16,7 +16,7 @@ AfterAll {
     Remove-Item $script:appDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Describe 'Get-PssScripts discovery' {
+Describe 'Get-StoScripts discovery' {
     BeforeEach {
         Get-ChildItem $script:root -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
     }
@@ -24,7 +24,7 @@ Describe 'Get-PssScripts discovery' {
     It 'uses main.ps1 by convention' {
         New-Item -ItemType Directory -Path (Join-Path $script:root 'a') | Out-Null
         'x' | Set-Content (Join-Path $script:root 'a/main.ps1')
-        $s = @(Get-PssScripts)
+        $s = @(Get-StoScripts)
         $s.Count | Should -Be 1
         $s[0].Entry | Should -Match 'main\.ps1$'
     }
@@ -35,7 +35,7 @@ Describe 'Get-PssScripts discovery' {
         'x' | Set-Content (Join-Path $d 'main.ps1')
         'x' | Set-Content (Join-Path $d 'custom.ps1')
         '{"entry": "custom.ps1", "description": "desc", "timeoutMinutes": 15}' | Set-Content (Join-Path $d 'script.json')
-        $s = @(Get-PssScripts)[0]
+        $s = @(Get-StoScripts)[0]
         $s.Entry | Should -Match 'custom\.ps1$'
         $s.Description | Should -Be 'desc'
         $s.TimeoutMinutes | Should -Be 15
@@ -45,7 +45,7 @@ Describe 'Get-PssScripts discovery' {
         $d = Join-Path $script:root 'c'
         New-Item -ItemType Directory -Path $d | Out-Null
         'x' | Set-Content (Join-Path $d 'whatever.ps1')
-        @(Get-PssScripts)[0].Entry | Should -Match 'whatever\.ps1$'
+        @(Get-StoScripts)[0].Entry | Should -Match 'whatever\.ps1$'
     }
 
     It 'ignores non-numeric timeoutMinutes' {
@@ -53,26 +53,26 @@ Describe 'Get-PssScripts discovery' {
         New-Item -ItemType Directory -Path $d | Out-Null
         'x' | Set-Content (Join-Path $d 'main.ps1')
         '{"timeoutMinutes": "soon"}' | Set-Content (Join-Path $d 'script.json')
-        @(Get-PssScripts)[0].TimeoutMinutes | Should -Be $null
+        @(Get-StoScripts)[0].TimeoutMinutes | Should -Be $null
     }
 
     It 'discovers loose ps1 files in the repo root' {
         'x' | Set-Content (Join-Path $script:root 'loose.ps1')
-        $s = @(Get-PssScripts)
+        $s = @(Get-StoScripts)
         $s.Count | Should -Be 1
         $s[0].Name | Should -Be 'loose'
     }
 
     It 'skips folders with no entry point' {
         New-Item -ItemType Directory -Path (Join-Path $script:root 'empty') | Out-Null
-        @(Get-PssScripts).Count | Should -Be 0
+        @(Get-StoScripts).Count | Should -Be 0
     }
 }
 
-Describe 'Get-PssLastSyncTime' {
+Describe 'Get-StoLastSyncTime' {
     It 'is null when the clone does not exist yet' {
         Remove-Item (Join-Path $script:root '.git') -Recurse -Force -ErrorAction SilentlyContinue
-        Get-PssLastSyncTime | Should -Be $null
+        Get-StoLastSyncTime | Should -Be $null
     }
 
     It 'uses FETCH_HEAD mtime when present' {
@@ -82,7 +82,7 @@ Describe 'Get-PssLastSyncTime' {
         'x' | Set-Content $fh
         $stamp = (Get-Date).AddMinutes(-42)
         (Get-Item $fh).LastWriteTime = $stamp
-        $got = Get-PssLastSyncTime
+        $got = Get-StoLastSyncTime
         [Math]::Abs(($got - $stamp).TotalSeconds) | Should -BeLessThan 2
         Remove-Item $git -Recurse -Force
     }
@@ -97,20 +97,20 @@ Describe 'python script discovery' {
         $d = Join-Path $script:root 'pya'
         New-Item -ItemType Directory -Path $d | Out-Null
         'print(1)' | Set-Content (Join-Path $d 'main.py')
-        $s = @(Get-PssScripts)[0]
+        $s = @(Get-StoScripts)[0]
         $s.Entry | Should -Match 'main\.py$'
         $s.Runtime | Should -Be 'python'
-        $s.VenvDir | Should -Be (Join-Path (Get-PssPaths).VenvsDir 'pya')
+        $s.VenvDir | Should -Be (Join-Path (Get-StoPaths).VenvsDir 'pya')
     }
 
     It 'resolves __main__.py and the sole .py fallback' {
         $d = Join-Path $script:root 'pyb'
         New-Item -ItemType Directory -Path $d | Out-Null
         'print(1)' | Set-Content (Join-Path $d '__main__.py')
-        @(Get-PssScripts)[0].Entry | Should -Match '__main__\.py$'
+        @(Get-StoScripts)[0].Entry | Should -Match '__main__\.py$'
         Remove-Item (Join-Path $d '__main__.py')
         'print(1)' | Set-Content (Join-Path $d 'oddname.py')
-        @(Get-PssScripts)[0].Entry | Should -Match 'oddname\.py$'
+        @(Get-StoScripts)[0].Entry | Should -Match 'oddname\.py$'
     }
 
     It 'prefers a conventional ps1 over python in a mixed folder' {
@@ -118,7 +118,7 @@ Describe 'python script discovery' {
         New-Item -ItemType Directory -Path $d | Out-Null
         'x' | Set-Content (Join-Path $d 'main.ps1')
         'print(1)' | Set-Content (Join-Path $d 'main.py')
-        $s = @(Get-PssScripts)[0]
+        $s = @(Get-StoScripts)[0]
         $s.Runtime | Should -Be 'powershell'
     }
 
@@ -128,7 +128,7 @@ Describe 'python script discovery' {
         'x' | Set-Content (Join-Path $d 'main.ps1')
         'print(1)' | Set-Content (Join-Path $d 'actual.py')
         '{"entry": "actual.py"}' | Set-Content (Join-Path $d 'script.json')
-        $s = @(Get-PssScripts)[0]
+        $s = @(Get-StoScripts)[0]
         $s.Runtime | Should -Be 'python'
         $s.Entry | Should -Match 'actual\.py$'
     }
@@ -139,7 +139,7 @@ Describe 'python script discovery' {
             'print(1)' | Set-Content (Join-Path $script:root "$skip/main.py")
         }
         'print(1)' | Set-Content (Join-Path $script:root 'loosepy.py')
-        $s = @(Get-PssScripts)
+        $s = @(Get-StoScripts)
         $s.Count | Should -Be 1
         $s[0].Name | Should -Be 'loosepy'
         $s[0].Runtime | Should -Be 'python'
@@ -158,16 +158,16 @@ Describe 'multi-repo config' {
                 @{ name = 'pyrepo'; url = 'https://github.com/org/py-scripts'; branch = 'dev' }
             )
         } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $script:appDir2 'config.json')
-        Initialize-Pss -AppDir $script:appDir2
-        $script:sroot = (Get-PssPaths).ScriptsDir
+        Initialize-Sto -AppDir $script:appDir2
+        $script:sroot = (Get-StoPaths).ScriptsDir
     }
     AfterAll {
         Remove-Item $script:appDir2 -Recurse -Force -ErrorAction SilentlyContinue
-        Initialize-Pss -AppDir $script:appDir   # restore for any later files
+        Initialize-Sto -AppDir $script:appDir   # restore for any later files
     }
 
     It 'normalizes repo entries with per-repo roots and branches' {
-        $repos = @(Get-PssRepos)
+        $repos = @(Get-StoRepos)
         $repos.Count | Should -Be 2
         $repos[0].Root | Should -Be (Join-Path $script:sroot 'psrepo')
         $repos[0].Branch | Should -Be 'main'
@@ -182,7 +182,7 @@ Describe 'multi-repo config' {
         'x' | Set-Content (Join-Path $script:sroot 'psrepo/foo/main.ps1')
         'print(1)' | Set-Content (Join-Path $script:sroot 'pyrepo/foo/main.py')
         'print(1)' | Set-Content (Join-Path $script:sroot 'pyrepo/bar/main.py')
-        $s = @(Get-PssScripts)
+        $s = @(Get-StoScripts)
         ($s | ForEach-Object Name) | Should -Be @('foo', 'bar', 'pyrepo-foo')
         ($s | Where-Object Name -eq 'foo').Repo | Should -Be 'psrepo'
         ($s | Where-Object Name -eq 'pyrepo-foo').Runtime | Should -Be 'python'
@@ -193,17 +193,17 @@ Describe 'multi-repo config' {
         New-Item -ItemType Directory -Path (Join-Path $script:sroot '.git') -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $script:sroot 'oldscript') -Force | Out-Null
         'x' | Set-Content (Join-Path $script:sroot 'oldscript/main.ps1')
-        Update-PssRepoLayout
+        Update-StoRepoLayout
         Test-Path (Join-Path $script:sroot 'psrepo/.git') | Should -BeTrue
         Test-Path (Join-Path $script:sroot 'psrepo/oldscript/main.ps1') | Should -BeTrue
         Test-Path (Join-Path $script:sroot '.git') | Should -BeFalse
     }
 }
 
-Describe 'Get-PssScriptDetail' {
+Describe 'Get-StoScriptDetail' {
     BeforeAll {
-        Initialize-Pss -AppDir $script:appDir
-        $script:droot = (Get-PssPaths).ScriptsDir
+        Initialize-Sto -AppDir $script:appDir
+        $script:droot = (Get-StoPaths).ScriptsDir
     }
     BeforeEach {
         Get-ChildItem $script:droot -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
@@ -236,8 +236,8 @@ Write-Output ok
         'MS_TENANT_ID=real-secret-value-123' | Set-Content (Join-Path $d '.env')
         '# rich script docs' | Set-Content (Join-Path $d 'README.md')
 
-        $s = @(Get-PssScripts) | Where-Object Name -eq 'rich'
-        $detail = Get-PssScriptDetail -Script $s
+        $s = @(Get-StoScripts) | Where-Object Name -eq 'rich'
+        $detail = Get-StoScriptDetail -Script $s
 
         $detail.parameterSource | Should -Match 'AST'
         $p = @($detail.parameters)
@@ -261,8 +261,8 @@ Write-Output ok
         New-Item -ItemType Directory -Path $d | Out-Null
         'print(1)' | Set-Content (Join-Path $d 'main.py')
         '# python docs' | Set-Content (Join-Path $d 'README.md')
-        $s = @(Get-PssScripts) | Where-Object Name -eq 'pydetail'
-        $detail = Get-PssScriptDetail -Script $s
+        $s = @(Get-StoScripts) | Where-Object Name -eq 'pydetail'
+        $detail = Get-StoScriptDetail -Script $s
         @($detail.parameters).Count | Should -Be 0
         $detail.parameterSource | Should -Match 'readme'
         $detail.readme | Should -Match 'python docs'
@@ -272,8 +272,8 @@ Write-Output ok
         $d = Join-Path $script:droot 'broken'
         New-Item -ItemType Directory -Path $d | Out-Null
         'param([string]$X' | Set-Content (Join-Path $d 'main.ps1')   # unclosed
-        $s = @(Get-PssScripts) | Where-Object Name -eq 'broken'
-        $detail = Get-PssScriptDetail -Script $s
+        $s = @(Get-StoScripts) | Where-Object Name -eq 'broken'
+        $detail = Get-StoScriptDetail -Script $s
         $detail.parseWarnings | Should -BeGreaterThan 0
     }
 }

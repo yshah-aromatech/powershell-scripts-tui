@@ -8,10 +8,10 @@
 # `repos` is configured and an old root-level clone exists, move it into the
 # subdir of the repo it matches (by remote URL), else the first repo.
 # ---------------------------------------------------------------------------
-function Update-PssRepoLayout {
+function Update-StoRepoLayout {
     param([scriptblock]$OnOutput = { param($line) })
-    $paths = Get-PssPaths
-    $repos = @(Get-PssRepos)
+    $paths = Get-StoPaths
+    $repos = @(Get-StoRepos)
     if ($repos.Count -eq 0 -or $repos[0].Legacy) { return }
     if (-not (Test-Path (Join-Path $paths.ScriptsDir '.git'))) { return }
 
@@ -38,12 +38,12 @@ function Update-PssRepoLayout {
 # Repo sync: clone if missing, otherwise hard-reset to origin/<branch>.
 # Local per-script .env files survive the reset/clean.
 # ---------------------------------------------------------------------------
-function Sync-PssOneRepo {
+function Sync-StoOneRepo {
     param(
         [Parameter(Mandatory)]$Repo,
         [scriptblock]$OnOutput = { param($line) }
     )
-    $emit = { param($l) & $OnOutput (Hide-PssSecret $l) }
+    $emit = { param($l) & $OnOutput (Hide-StoSecret $l) }
 
     $url = $Repo.Url
     $token = $env:GITHUB_TOKEN
@@ -88,20 +88,20 @@ function Sync-PssOneRepo {
     $ok
 }
 
-function Sync-PssRepo {
+function Sync-StoRepo {
     [CmdletBinding()]
     param([scriptblock]$OnOutput = { param($line) })
 
-    $repos = @(Get-PssRepos | Where-Object Url)
+    $repos = @(Get-StoRepos | Where-Object Url)
     if ($repos.Count -eq 0) {
         & $OnOutput 'no scripts repo configured — set `repos` (or scriptsRepo) in config.json, or SCRIPTS_REPO in .env'
         return $false
     }
-    Update-PssRepoLayout -OnOutput $OnOutput
+    Update-StoRepoLayout -OnOutput $OnOutput
 
     $allOk = $true
     foreach ($repo in $repos) {
-        if (-not (Sync-PssOneRepo -Repo $repo -OnOutput $OnOutput)) { $allOk = $false }
+        if (-not (Sync-StoOneRepo -Repo $repo -OnOutput $OnOutput)) { $allOk = $false }
     }
     $allOk
 }
@@ -109,9 +109,9 @@ function Sync-PssRepo {
 # When the scripts clones were last synced: FETCH_HEAD is touched by every
 # fetch; a fresh clone (no fetch yet) falls back to the .git dir itself.
 # Reflects syncs from any process (TUI, --sync, cron), not just this one.
-function Get-PssLastSyncTime {
+function Get-StoLastSyncTime {
     $latest = $null
-    foreach ($repo in @(Get-PssRepos)) {
+    foreach ($repo in @(Get-StoRepos)) {
         foreach ($p in (Join-Path $repo.Root '.git/FETCH_HEAD'), (Join-Path $repo.Root '.git')) {
             if (Test-Path $p) {
                 $t = (Get-Item -Force $p).LastWriteTime
@@ -131,7 +131,7 @@ function Get-PssLastSyncTime {
 # ---------------------------------------------------------------------------
 $script:SkipDirs = @('.git', '.github', '__pycache__', '.venv', 'node_modules')
 
-function Resolve-PssEntry {
+function Resolve-StoEntry {
     # returns the entry file's full path, or $null
     param([string]$DirPath, [string]$DirName, $Meta)
 
@@ -160,14 +160,14 @@ function Resolve-PssEntry {
     $null
 }
 
-function Get-PssRuntime {
+function Get-StoRuntime {
     param([string]$Entry)
     if ([IO.Path]::GetExtension($Entry) -ieq '.py') { 'python' } else { 'powershell' }
 }
 
-function New-PssScriptInfo {
+function New-StoScriptInfo {
     param([string]$Name, [string]$Dir, [string]$Entry, $Meta, [string]$RepoName, [string]$EnvBase)
-    $paths = Get-PssPaths
+    $paths = Get-StoPaths
 
     $scriptArgs = @()
     if ($Meta -and $Meta.PSObject.Properties['args'] -and $Meta.args) { $scriptArgs = @($Meta.args | ForEach-Object { "$_" }) }
@@ -183,7 +183,7 @@ function New-PssScriptInfo {
         Name           = $Name
         Dir            = $Dir
         Entry          = $Entry
-        Runtime        = Get-PssRuntime $Entry
+        Runtime        = Get-StoRuntime $Entry
         Repo           = $RepoName
         Args           = $scriptArgs
         Description    = $desc
@@ -196,11 +196,11 @@ function New-PssScriptInfo {
     }
 }
 
-function Get-PssScripts {
+function Get-StoScripts {
     $scripts = [System.Collections.Generic.List[object]]::new()
     $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
-    foreach ($repo in @(Get-PssRepos)) {
+    foreach ($repo in @(Get-StoRepos)) {
         $root = $repo.Root
         if (-not (Test-Path $root)) { continue }
 
@@ -210,7 +210,7 @@ function Get-PssScripts {
             if (Test-Path $metaFile) {
                 try { $meta = Get-Content $metaFile -Raw | ConvertFrom-Json } catch { }
             }
-            $entry = Resolve-PssEntry -DirPath $dir.FullName -DirName $dir.Name -Meta $meta
+            $entry = Resolve-StoEntry -DirPath $dir.FullName -DirName $dir.Name -Meta $meta
             if (-not $entry) { continue }
 
             # identity is the folder name; a cross-repo duplicate gets a stable
@@ -221,7 +221,7 @@ function Get-PssScripts {
                 [void]$seen.Add($name)
                 Write-Verbose "duplicate script folder '$($dir.Name)' — qualified as '$name'"
             }
-            $scripts.Add((New-PssScriptInfo -Name $name -Dir $dir.FullName -Entry $entry -Meta $meta -RepoName $repo.Name -EnvBase ''))
+            $scripts.Add((New-StoScriptInfo -Name $name -Dir $dir.FullName -Entry $entry -Meta $meta -RepoName $repo.Name -EnvBase ''))
         }
 
         # loose .ps1/.py files in the repo root
@@ -231,7 +231,7 @@ function Get-PssScripts {
                 $name = "$($repo.Name)-$([IO.Path]::GetFileNameWithoutExtension($file.Name))"
                 [void]$seen.Add($name)
             }
-            $scripts.Add((New-PssScriptInfo -Name $name -Dir $root -Entry $file.FullName -Meta $null -RepoName $repo.Name -EnvBase ([IO.Path]::GetFileNameWithoutExtension($file.Name))))
+            $scripts.Add((New-StoScriptInfo -Name $name -Dir $root -Entry $file.FullName -Meta $null -RepoName $repo.Name -EnvBase ([IO.Path]::GetFileNameWithoutExtension($file.Name))))
         }
     }
 
@@ -243,7 +243,7 @@ function Get-PssScripts {
 # README, documented .env keys, and — for PowerShell — the param() block
 # parsed from the AST (never executed).
 # ---------------------------------------------------------------------------
-function Get-PssScriptParameters {
+function Get-StoScriptParameters {
     # PowerShell entry -> list of @{ Name; Type; Mandatory; Default;
     # ValidateSet; IsSwitch; Description }, plus Help/Warnings via -Detail
     param([Parameter(Mandatory)][string]$Entry)
@@ -298,7 +298,7 @@ function Get-PssScriptParameters {
     }
 }
 
-function Get-PssScriptDetail {
+function Get-StoScriptDetail {
     param([Parameter(Mandatory)]$Script)
     $isPython = ("$($Script.Runtime)" -eq 'python')
 
@@ -312,10 +312,10 @@ function Get-PssScriptDetail {
     }
 
     # documented env vars from .env.example; configured = key NAMES only
-    $envExample = @(Read-PssEnvDoc -Path $Script.EnvExample | ForEach-Object {
+    $envExample = @(Read-StoEnvDoc -Path $Script.EnvExample | ForEach-Object {
             [ordered]@{ key = $_.Key; default = $_.Default; comment = $_.Comment }
         })
-    $envConfigured = @((Read-PssEnvFile $Script.EnvFile).Keys)
+    $envConfigured = @((Read-StoEnvFile $Script.EnvFile).Keys)
 
     $detail = [ordered]@{
         name           = $Script.Name
@@ -335,7 +335,7 @@ function Get-PssScriptDetail {
         $detail.parameterSource = 'none — see readme'
         $detail.argsHint = 'Python: pass args as e.g. --flag value; see readme for supported options'
     } else {
-        $scan = Get-PssScriptParameters -Entry $Script.Entry
+        $scan = Get-StoScriptParameters -Entry $Script.Entry
         $detail.parameters = @($scan.Parameters | ForEach-Object {
                 [ordered]@{
                     name        = $_.Name
@@ -357,5 +357,5 @@ function Get-PssScriptDetail {
     $detail
 }
 
-Export-ModuleMember -Function Sync-PssRepo, Sync-PssOneRepo, Update-PssRepoLayout, Get-PssScripts, Get-PssLastSyncTime,
-Get-PssScriptDetail, Get-PssScriptParameters
+Export-ModuleMember -Function Sync-StoRepo, Sync-StoOneRepo, Update-StoRepoLayout, Get-StoScripts, Get-StoLastSyncTime,
+Get-StoScriptDetail, Get-StoScriptParameters

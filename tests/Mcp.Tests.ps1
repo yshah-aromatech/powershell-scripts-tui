@@ -2,15 +2,15 @@ BeforeAll {
     foreach ($m in 'Core', 'Scripts', 'Deps', 'Runner', 'Cron', 'Mcp') {
         Import-Module (Join-Path $PSScriptRoot "../src/$m.psm1") -Force -DisableNameChecking
     }
-    # isolated app + data dir so tests never touch ~/.psscripts
+    # isolated app + data dir so tests never touch ~/.scriptorium
     $script:appDir = Join-Path ([IO.Path]::GetTempPath()) "pss-mcp-tests-$(New-Guid)"
     New-Item -ItemType Directory -Path $script:appDir -Force | Out-Null
     @{ dataDir = (Join-Path $script:appDir 'data') } | ConvertTo-Json |
         Set-Content (Join-Path $script:appDir 'config.json')
-    Initialize-Pss -AppDir $script:appDir
+    Initialize-Sto -AppDir $script:appDir
 
     # fixture scripts repo
-    $scriptsDir = (Get-PssPaths).ScriptsDir
+    $scriptsDir = (Get-StoPaths).ScriptsDir
     foreach ($f in 'hello', 'envtest', 'sleeper') {
         New-Item -ItemType Directory -Path (Join-Path $scriptsDir $f) -Force | Out-Null
     }
@@ -26,7 +26,7 @@ if ($env:MCP_TEST_VAR -eq 'supersecretvalue') { exit 0 } else { exit 1 }
         param([string]$Method, $Params = $null, $Id = 1, [bool]$Authorized = $true)
         $req = [ordered]@{ jsonrpc = '2.0'; id = $Id; method = $Method }
         if ($null -ne $Params) { $req.params = $Params }
-        $r = Invoke-PssMcpRequest -Body ($req | ConvertTo-Json -Depth 10 -Compress) -Authorized $Authorized
+        $r = Invoke-StoMcpRequest -Body ($req | ConvertTo-Json -Depth 10 -Compress) -Authorized $Authorized
         if ($r.Json) { $r.Parsed = $r.Json | ConvertFrom-Json }
         $r
     }
@@ -48,7 +48,7 @@ Describe 'initialize' {
     }
     It 'reports serverInfo and tools capability' {
         $r = Send-Rpc -Method 'initialize' -Params @{ protocolVersion = '2025-03-26' }
-        $r.Parsed.result.serverInfo.name | Should -Be 'psscripts'
+        $r.Parsed.result.serverInfo.name | Should -Be 'scriptorium'
         # empty JSON objects parse to property-less PSCustomObjects, which
         # Pester's BeNullOrEmpty treats as empty — assert on the wire form
         $r.Json | Should -Match '"capabilities":\{"tools":\{\}\}'
@@ -57,22 +57,22 @@ Describe 'initialize' {
 
 Describe 'auth and protocol errors' {
     It 'rejects unauthorized requests with 401 regardless of body' {
-        $r = Invoke-PssMcpRequest -Body '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -Authorized $false
+        $r = Invoke-StoMcpRequest -Body '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' -Authorized $false
         $r.StatusCode | Should -Be 401
-        $r = Invoke-PssMcpRequest -Body 'not json at all' -Authorized $false
+        $r = Invoke-StoMcpRequest -Body 'not json at all' -Authorized $false
         $r.StatusCode | Should -Be 401
     }
     It 'answers notifications with 202 and no body' {
-        $r = Invoke-PssMcpRequest -Body '{"jsonrpc":"2.0","method":"notifications/initialized"}' -Authorized $true
+        $r = Invoke-StoMcpRequest -Body '{"jsonrpc":"2.0","method":"notifications/initialized"}' -Authorized $true
         $r.StatusCode | Should -Be 202
         $r.Json | Should -BeNullOrEmpty
     }
     It 'returns -32700 for a malformed body' {
-        $r = Invoke-PssMcpRequest -Body '{nope' -Authorized $true
+        $r = Invoke-StoMcpRequest -Body '{nope' -Authorized $true
         ($r.Json | ConvertFrom-Json).error.code | Should -Be -32700
     }
     It 'returns -32600 when method is missing' {
-        $r = Invoke-PssMcpRequest -Body '{"jsonrpc":"2.0","id":5}' -Authorized $true
+        $r = Invoke-StoMcpRequest -Body '{"jsonrpc":"2.0","id":5}' -Authorized $true
         ($r.Json | ConvertFrom-Json).error.code | Should -Be -32600
     }
     It 'returns -32601 for an unknown method' {
@@ -145,7 +145,7 @@ Describe 'run_script tool' {
         $run.status | Should -Be 'success'
         $run.exitCode | Should -Be 0
         $run.output | Should -Match 'hello out'
-        $last = @(Get-PssHistory -Last 5) | Where-Object script -eq 'hello' | Select-Object -Last 1
+        $last = @(Get-StoHistory -Last 5) | Where-Object script -eq 'hello' | Select-Object -Last 1
         $last.trigger | Should -Be 'mcp'
     }
     It 'passes env vars through and redacts their values in the output' {
@@ -159,14 +159,14 @@ Describe 'run_script tool' {
         $run.output | Should -Match '\*\*\*'
     }
     It 'reports skipped when the script is already running (locked)' {
-        $lock = Lock-PssScript -Name 'hello'
+        $lock = Lock-StoScript -Name 'hello'
         try {
             $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'run_script'; arguments = @{ script = 'hello' } }
             $run = $r.Parsed.result.content[0].text | ConvertFrom-Json
             $run.status | Should -Be 'skipped'
             $run.note | Should -Match 'already running'
         } finally {
-            Unlock-PssScript -Handle @{ LockFile = $lock.File }
+            Unlock-StoScript -Handle @{ LockFile = $lock.File }
         }
     }
     It 'honors the timeout_minutes override' {
@@ -179,10 +179,10 @@ Describe 'run_script tool' {
     }
 }
 
-Describe 'Get-PssMcpServiceUnit' {
+Describe 'Get-StoMcpServiceUnit' {
     It 'generates a valid systemd unit pointing at the app' {
-        $u = Get-PssMcpServiceUnit -AppDir '/opt/pss' -PwshPath '/usr/bin/pwsh'
-        $u | Should -Match '(?m)^ExecStart=/usr/bin/pwsh -NoProfile -File /opt/pss/psscripts\.ps1 --mcp$'
+        $u = Get-StoMcpServiceUnit -AppDir '/opt/pss' -PwshPath '/usr/bin/pwsh'
+        $u | Should -Match '(?m)^ExecStart=/usr/bin/pwsh -NoProfile -File /opt/pss/scriptorium\.ps1 --mcp$'
         $u | Should -Match '(?m)^WorkingDirectory=/opt/pss$'
         $u | Should -Match '(?m)^Environment=HOME=%h$'
         $u | Should -Match '(?m)^Restart=on-failure$'
@@ -202,7 +202,7 @@ Describe 'get_history tool' {
 
 Describe 'get_script_details tool' {
     It 'returns parsed parameters for a PowerShell script' {
-        $d = Join-Path (Get-PssPaths).ScriptsDir 'detailed'
+        $d = Join-Path (Get-StoPaths).ScriptsDir 'detailed'
         New-Item -ItemType Directory -Path $d -Force | Out-Null
         "param([Parameter(Mandatory)][string]`$Who, [switch]`$DryRun)`nWrite-Output hi" |
             Set-Content (Join-Path $d 'main.ps1')
@@ -222,7 +222,7 @@ Describe 'get_script_details tool' {
 
 Describe 'list_scripts enrichment' {
     It 'reports runtime, repo and running state' {
-        $lock = Lock-PssScript -Name 'hello'
+        $lock = Lock-StoScript -Name 'hello'
         try {
             $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'list_scripts'; arguments = @{} }
             $list = ($r.Parsed.result.content[0].text | ConvertFrom-Json).scripts
@@ -231,7 +231,7 @@ Describe 'list_scripts enrichment' {
             $hello.runtime | Should -Be 'powershell'
             $hello.repo | Should -Be 'scripts'
         } finally {
-            Unlock-PssScript -Handle @{ LockFile = $lock.File }
+            Unlock-StoScript -Handle @{ LockFile = $lock.File }
         }
     }
 }
@@ -270,9 +270,9 @@ Describe 'sync_repos tool' {
 Describe 'schedule tools' {
     BeforeAll {
         # never touch the real crontab from tests
-        Mock Set-PssSchedule { } -ModuleName Mcp
-        Mock Remove-PssSchedule { } -ModuleName Mcp
-        Mock Get-PssSchedules { @{ hello = '*/30 * * * *' } } -ModuleName Mcp
+        Mock Set-StoSchedule { } -ModuleName Mcp
+        Mock Remove-StoSchedule { } -ModuleName Mcp
+        Mock Get-StoSchedules { @{ hello = '*/30 * * * *' } } -ModuleName Mcp
     }
     It 'lists schedules with next fire times' {
         $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'get_schedules'; arguments = @{} }
@@ -287,18 +287,18 @@ Describe 'schedule tools' {
         $r.Parsed.result.isError | Should -BeFalse
         $out = $r.Parsed.result.content[0].text | ConvertFrom-Json
         $out.cron | Should -Be '@daily'
-        Should -Invoke Set-PssSchedule -ModuleName Mcp -Times 1 -Exactly
+        Should -Invoke Set-StoSchedule -ModuleName Mcp -Times 1 -Exactly
     }
     It 'rejects an invalid cron expression without writing' {
         $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'set_schedule'; arguments = @{ script = 'hello'; cron = 'every tuesday' } }
         $r.Parsed.result.isError | Should -BeTrue
         $r.Parsed.result.content[0].text | Should -Match '@hourly'
-        Should -Invoke Set-PssSchedule -ModuleName Mcp -Times 0 -Exactly
+        Should -Invoke Set-StoSchedule -ModuleName Mcp -Times 0 -Exactly
     }
     It 'removes a schedule' {
         $r = Send-Rpc -Method 'tools/call' -Params @{ name = 'remove_schedule'; arguments = @{ script = 'hello' } }
         $r.Parsed.result.isError | Should -BeFalse
-        Should -Invoke Remove-PssSchedule -ModuleName Mcp -Times 1 -Exactly
+        Should -Invoke Remove-StoSchedule -ModuleName Mcp -Times 1 -Exactly
     }
 }
 

@@ -6,8 +6,8 @@
 # response per POST, one JSON-RPC message per request. Auth is a shared
 # Bearer token (MCP_AUTH_TOKEN); the server refuses to start without one.
 #
-# Layering: Invoke-PssMcpRequest / Invoke-PssMcpTool are pure functions
-# (no sockets) so Pester covers the whole protocol; Start-PssMcpServer is a
+# Layering: Invoke-StoMcpRequest / Invoke-StoMcpTool are pure functions
+# (no sockets) so Pester covers the whole protocol; Start-StoMcpServer is a
 # thin synchronous HttpListener loop around them. Tool calls execute inline —
 # one at a time by design; the per-script lock still guards against stacking
 # with TUI/cron runs of the same script.
@@ -19,7 +19,7 @@ $script:McpMaxBodyBytes = 1MB
 # ---------------------------------------------------------------------------
 # Tool registry
 # ---------------------------------------------------------------------------
-function Get-PssMcpTools {
+function Get-StoMcpTools {
     $readOnly = [ordered]@{ readOnlyHint = $true; idempotentHint = $true }
     $scriptArg = [ordered]@{ type = 'string'; description = 'Script name exactly as returned by list_scripts' }
     @(
@@ -142,50 +142,50 @@ function Get-PssMcpTools {
 # that ran and failed is a NORMAL result with status='failure' — the agent
 # reads the field.
 # ---------------------------------------------------------------------------
-function Invoke-PssMcpTool {
+function Invoke-StoMcpTool {
     param(
         [Parameter(Mandatory)][string]$Name,
         [hashtable]$Arguments = @{}
     )
     if ($null -eq $Arguments) { $Arguments = @{} }
     switch ($Name) {
-        'list_scripts' { return Invoke-PssMcpListScripts }
-        'get_script_details' { return Invoke-PssMcpScriptDetails -Arguments $Arguments }
-        'run_script' { return Invoke-PssMcpRunScript -Arguments $Arguments }
-        'get_history' { return Invoke-PssMcpGetHistory -Arguments $Arguments }
-        'get_run_log' { return Invoke-PssMcpGetRunLog -Arguments $Arguments }
-        'sync_repos' { return Invoke-PssMcpSyncRepos }
-        'get_schedules' { return Invoke-PssMcpGetSchedules }
-        'set_schedule' { return Invoke-PssMcpSetSchedule -Arguments $Arguments }
-        'remove_schedule' { return Invoke-PssMcpRemoveSchedule -Arguments $Arguments }
-        'install_deps' { return Invoke-PssMcpInstallDeps -Arguments $Arguments }
-        'update_app' { return Invoke-PssMcpUpdateApp }
-        'update_packages' { return Invoke-PssMcpUpdatePackages }
+        'list_scripts' { return Invoke-StoMcpListScripts }
+        'get_script_details' { return Invoke-StoMcpScriptDetails -Arguments $Arguments }
+        'run_script' { return Invoke-StoMcpRunScript -Arguments $Arguments }
+        'get_history' { return Invoke-StoMcpGetHistory -Arguments $Arguments }
+        'get_run_log' { return Invoke-StoMcpGetRunLog -Arguments $Arguments }
+        'sync_repos' { return Invoke-StoMcpSyncRepos }
+        'get_schedules' { return Invoke-StoMcpGetSchedules }
+        'set_schedule' { return Invoke-StoMcpSetSchedule -Arguments $Arguments }
+        'remove_schedule' { return Invoke-StoMcpRemoveSchedule -Arguments $Arguments }
+        'install_deps' { return Invoke-StoMcpInstallDeps -Arguments $Arguments }
+        'update_app' { return Invoke-StoMcpUpdateApp }
+        'update_packages' { return Invoke-StoMcpUpdatePackages }
         default {
-            $valid = (Get-PssMcpTools | ForEach-Object name) -join ', '
+            $valid = (Get-StoMcpTools | ForEach-Object name) -join ', '
             return @{ Text = "unknown tool '$Name' — valid tools: $valid"; IsError = $true }
         }
     }
 }
 
 # shared script-by-name lookup: @{ Script } or @{ Error } with valid names
-function Resolve-PssMcpScript {
+function Resolve-StoMcpScript {
     param([hashtable]$Arguments)
     $name = "$($Arguments['script'])"
     if (-not $name) { return @{ Error = "missing required argument 'script'" } }
-    $target = Get-PssScripts | Where-Object Name -eq $name | Select-Object -First 1
+    $target = Get-StoScripts | Where-Object Name -eq $name | Select-Object -First 1
     if (-not $target) {
-        $valid = (@(Get-PssScripts) | ForEach-Object Name) -join ', '
+        $valid = (@(Get-StoScripts) | ForEach-Object Name) -join ', '
         return @{ Error = "unknown script '$name' — valid scripts: $valid" }
     }
     @{ Script = $target }
 }
 
-function Invoke-PssMcpListScripts {
-    $statuses = Get-PssLastStatuses
+function Invoke-StoMcpListScripts {
+    $statuses = Get-StoLastStatuses
     $schedules = @{}
-    try { $schedules = Get-PssSchedules } catch { }
-    $items = foreach ($s in @(Get-PssScripts)) {
+    try { $schedules = Get-StoSchedules } catch { }
+    $items = foreach ($s in @(Get-StoScripts)) {
         $st = $statuses[$s.Name]
         [ordered]@{
             name            = $s.Name
@@ -193,7 +193,7 @@ function Invoke-PssMcpListScripts {
             repo            = "$($s.Repo)"
             description     = "$($s.Description)"
             entry           = [IO.Path]::GetFileName("$($s.Entry)")
-            running         = (Test-PssScriptLocked -Name $s.Name)
+            running         = (Test-StoScriptLocked -Name $s.Name)
             lastStatus      = if ($st) { $st.Status } else { 'never run' }
             lastRunAt       = if ($st -and $st.At) { $st.At.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null }
             lastDurationSec = if ($st) { $st.DurationSec } else { $null }
@@ -204,22 +204,22 @@ function Invoke-PssMcpListScripts {
     @{ Text = ([ordered]@{ scripts = @($items) } | ConvertTo-Json -Depth 6 -Compress); IsError = $false }
 }
 
-function Invoke-PssMcpScriptDetails {
+function Invoke-StoMcpScriptDetails {
     param([hashtable]$Arguments)
-    $r = Resolve-PssMcpScript -Arguments $Arguments
+    $r = Resolve-StoMcpScript -Arguments $Arguments
     if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
-    $detail = Get-PssScriptDetail -Script $r.Script
+    $detail = Get-StoScriptDetail -Script $r.Script
     @{ Text = ($detail | ConvertTo-Json -Depth 8 -Compress); IsError = $false }
 }
 
-function Invoke-PssMcpRunScript {
+function Invoke-StoMcpRunScript {
     param([hashtable]$Arguments)
 
-    $r = Resolve-PssMcpScript -Arguments $Arguments
+    $r = Resolve-StoMcpScript -Arguments $Arguments
     if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
     $target = $r.Script
 
-    $extraArgs = @(Split-PssArguments "$($Arguments['args'])")
+    $extraArgs = @(Split-StoArguments "$($Arguments['args'])")
     $extraEnv = @{}
     if ($Arguments['env'] -is [System.Collections.IDictionary]) {
         foreach ($k in $Arguments['env'].Keys) { $extraEnv["$k"] = "$($Arguments['env'][$k])" }
@@ -227,24 +227,24 @@ function Invoke-PssMcpRunScript {
     $timeoutOverride = 0.0
     if ($null -ne ($Arguments['timeout_minutes'] -as [double])) { $timeoutOverride = [double]$Arguments['timeout_minutes'] }
 
-    # same auto-install-without-prompt behavior as `psscripts --run`
+    # same auto-install-without-prompt behavior as `scriptorium --run`
     $installed = @()
-    $missing = @(Get-PssMissingDeps -Script $target)
+    $missing = @(Get-StoMissingDeps -Script $target)
     if ($missing.Count -gt 0) {
-        $cfg = Get-PssConfig
-        $cmd = Get-PssInstallCommand -Script $target -Modules $missing
+        $cfg = Get-StoConfig
+        $cmd = Get-StoInstallCommand -Script $target -Modules $missing
         & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command $cmd | Out-Null
         $installed = @($missing | ForEach-Object Display)
     }
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    $handle = Start-PssRun -Script $target -Trigger 'mcp' -ExtraArgs $extraArgs `
+    $handle = Start-StoRun -Script $target -Trigger 'mcp' -ExtraArgs $extraArgs `
         -ExtraEnv $extraEnv -TimeoutOverride $timeoutOverride
-    $result = Invoke-PssRunToCompletion -Handle $handle -OnLine { param($l) $lines.Add($l) }.GetNewClosure()
+    $result = Invoke-StoRunToCompletion -Handle $handle -OnLine { param($l) $lines.Add($l) }.GetNewClosure()
 
     # prefer the log tail (bounded, already redacted); skipped runs have no log
-    $cfg = Get-PssConfig
-    $output = if ($result.logFile) { Get-PssLogTail -LogFile $result.logFile -TailKb ([int]$cfg.logTailKb) }
+    $cfg = Get-StoConfig
+    $output = if ($result.logFile) { Get-StoLogTail -LogFile $result.logFile -TailKb ([int]$cfg.logTailKb) }
     else { ($lines -join "`n") }
 
     $out = [ordered]@{
@@ -268,13 +268,13 @@ function Invoke-PssMcpRunScript {
     @{ Text = ($out | ConvertTo-Json -Depth 6 -Compress); IsError = $false }
 }
 
-function Invoke-PssMcpGetHistory {
+function Invoke-StoMcpGetHistory {
     param([hashtable]$Arguments)
     $limit = 20
     if ($null -ne ($Arguments['limit'] -as [int])) { $limit = [Math]::Min(200, [Math]::Max(1, [int]$Arguments['limit'])) }
     $name = "$($Arguments['script'])"
 
-    $items = @(Get-PssHistory -Last 500)
+    $items = @(Get-StoHistory -Last 500)
     if ($name) { $items = @($items | Where-Object { "$($_.script)" -eq $name }) }
     $items = @($items | Select-Object -Last $limit)
     [array]::Reverse($items)   # newest first
@@ -293,14 +293,14 @@ function Invoke-PssMcpGetHistory {
     @{ Text = ([ordered]@{ runs = @($runs) } | ConvertTo-Json -Depth 4 -Compress); IsError = $false }
 }
 
-function Invoke-PssMcpGetRunLog {
+function Invoke-StoMcpGetRunLog {
     param([hashtable]$Arguments)
     $logId = "$($Arguments['log_id'])"
     # strict allow-list: a log basename only — no separators, no traversal
     if ($logId -notmatch '^[A-Za-z0-9._-]+\.log$' -or $logId.Contains('..')) {
         return @{ Text = "invalid log_id '$logId' — use the logId field from get_history"; IsError = $true }
     }
-    $path = Join-Path (Get-PssPaths).LogsDir $logId
+    $path = Join-Path (Get-StoPaths).LogsDir $logId
     if (-not (Test-Path $path)) {
         return @{ Text = "log '$logId' not found (rotated out after logRetentionDays?)"; IsError = $true }
     }
@@ -308,24 +308,24 @@ function Invoke-PssMcpGetRunLog {
     if ($null -ne ($Arguments['tail_kb'] -as [int])) { $tailKb = [Math]::Min(256, [Math]::Max(1, [int]$Arguments['tail_kb'])) }
     $out = [ordered]@{
         logId = $logId
-        log   = (Get-PssLogTail -LogFile $path -TailKb $tailKb)
+        log   = (Get-StoLogTail -LogFile $path -TailKb $tailKb)
     }
     @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
 }
 
-function Invoke-PssMcpSyncRepos {
+function Invoke-StoMcpSyncRepos {
     $lines = [System.Collections.Generic.List[string]]::new()
-    $ok = Sync-PssRepo -OnOutput { param($l) $lines.Add($l) }.GetNewClosure()
+    $ok = Sync-StoRepo -OnOutput { param($l) $lines.Add($l) }.GetNewClosure()
     $out = [ordered]@{ ok = [bool]$ok; output = ($lines -join "`n") }
     @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = (-not $ok) }
 }
 
-function Invoke-PssMcpGetSchedules {
-    $schedules = Get-PssSchedules
+function Invoke-StoMcpGetSchedules {
+    $schedules = Get-StoSchedules
     $items = foreach ($k in ($schedules.Keys | Sort-Object)) {
         $next = $null
         try {
-            $n = Get-PssCronNext -Expression $schedules[$k] -From (Get-Date)
+            $n = Get-StoCronNext -Expression $schedules[$k] -From (Get-Date)
             if ($n) { $next = $n.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
         } catch { }
         [ordered]@{ script = $k; cron = $schedules[$k]; nextRun = $next }
@@ -333,30 +333,30 @@ function Invoke-PssMcpGetSchedules {
     @{ Text = ([ordered]@{ schedules = @($items) } | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
 }
 
-function Invoke-PssMcpSetSchedule {
+function Invoke-StoMcpSetSchedule {
     param([hashtable]$Arguments)
-    $r = Resolve-PssMcpScript -Arguments $Arguments
+    $r = Resolve-StoMcpScript -Arguments $Arguments
     if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
     $cron = "$($Arguments['cron'])".Trim()
-    if (-not (Test-PssCronExpression $cron)) {
+    if (-not (Test-StoCronExpression $cron)) {
         return @{ Text = "invalid cron expression '$cron' — use 5 fields (min hour dom mon dow, e.g. */30 * * * *) or @hourly/@daily/@weekly/@monthly/@reboot"; IsError = $true }
     }
-    Set-PssSchedule -Name $r.Script.Name -Expression $cron
+    Set-StoSchedule -Name $r.Script.Name -Expression $cron
     $next = $null
     try {
-        $n = Get-PssCronNext -Expression $cron -From (Get-Date)
+        $n = Get-StoCronNext -Expression $cron -From (Get-Date)
         if ($n) { $next = $n.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
     } catch { }
     $out = [ordered]@{ script = $r.Script.Name; cron = $cron; nextRun = $next; note = 'schedule saved to crontab' }
     @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
 }
 
-function Invoke-PssMcpRemoveSchedule {
+function Invoke-StoMcpRemoveSchedule {
     param([hashtable]$Arguments)
-    $r = Resolve-PssMcpScript -Arguments $Arguments
+    $r = Resolve-StoMcpScript -Arguments $Arguments
     if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
-    $had = (Get-PssSchedules).ContainsKey($r.Script.Name)
-    Remove-PssSchedule -Name $r.Script.Name
+    $had = (Get-StoSchedules).ContainsKey($r.Script.Name)
+    Remove-StoSchedule -Name $r.Script.Name
     $out = [ordered]@{
         script = $r.Script.Name
         note   = $(if ($had) { 'schedule removed' } else { 'no schedule was set' })
@@ -364,17 +364,17 @@ function Invoke-PssMcpRemoveSchedule {
     @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
 }
 
-function Invoke-PssMcpInstallDeps {
+function Invoke-StoMcpInstallDeps {
     param([hashtable]$Arguments)
-    $r = Resolve-PssMcpScript -Arguments $Arguments
+    $r = Resolve-StoMcpScript -Arguments $Arguments
     if ($r.Error) { return @{ Text = $r.Error; IsError = $true } }
-    $missing = @(Get-PssMissingDeps -Script $r.Script)
+    $missing = @(Get-StoMissingDeps -Script $r.Script)
     if ($missing.Count -eq 0) {
         return @{ Text = ([ordered]@{ script = $r.Script.Name; upToDate = $true } | ConvertTo-Json -Compress); IsError = $false }
     }
-    $cfg = Get-PssConfig
-    $cmd = Get-PssInstallCommand -Script $r.Script -Modules $missing
-    $output = & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command $cmd 2>&1 | ForEach-Object { Hide-PssSecret "$_" }
+    $cfg = Get-StoConfig
+    $cmd = Get-StoInstallCommand -Script $r.Script -Modules $missing
+    $output = & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command $cmd 2>&1 | ForEach-Object { Hide-StoSecret "$_" }
     $failed = ($LASTEXITCODE -ne 0)
     $out = [ordered]@{
         script    = $r.Script.Name
@@ -385,20 +385,20 @@ function Invoke-PssMcpInstallDeps {
     @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $failed }
 }
 
-function Invoke-PssMcpUpdateApp {
-    $app = Get-PssAppDir
-    $output = & git -C $app pull --ff-only 2>&1 | ForEach-Object { Hide-PssSecret "$_" }
+function Invoke-StoMcpUpdateApp {
+    $app = Get-StoAppDir
+    $output = & git -C $app pull --ff-only 2>&1 | ForEach-Object { Hide-StoSecret "$_" }
     $ok = ($LASTEXITCODE -eq 0)
     $out = [ordered]@{
         ok     = $ok
         output = (@($output) -join "`n")
-        note   = 'restart the MCP service to apply: systemctl restart psscripts-mcp'
+        note   = 'restart the MCP service to apply: systemctl restart scriptorium-mcp'
     }
     @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = (-not $ok) }
 }
 
-function Invoke-PssMcpUpdatePackages {
-    $cfg = Get-PssConfig
+function Invoke-StoMcpUpdatePackages {
+    $cfg = Get-StoConfig
     $lines = [System.Collections.Generic.List[string]]::new()
 
     & sudo -n true 2>$null
@@ -411,11 +411,11 @@ function Invoke-PssMcpUpdatePackages {
     }
 
     $lines.Add('== module dirs ==')
-    & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command (Get-PssModuleUpgradeCommand) 2>&1 |
-        ForEach-Object { $lines.Add((Hide-PssSecret "$_")) }
+    & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command (Get-StoModuleUpgradeCommand) 2>&1 |
+        ForEach-Object { $lines.Add((Hide-StoSecret "$_")) }
     $lines.Add('== python venvs ==')
-    & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command (Get-PssVenvUpgradeCommand) 2>&1 |
-        ForEach-Object { $lines.Add((Hide-PssSecret "$_")) }
+    & ([string]$cfg.pwshBin) -NoProfile -NonInteractive -Command (Get-StoVenvUpgradeCommand) 2>&1 |
+        ForEach-Object { $lines.Add((Hide-StoSecret "$_")) }
 
     $out = [ordered]@{ ok = $true; output = ($lines -join "`n") }
     @{ Text = ($out | ConvertTo-Json -Depth 3 -Compress); IsError = $false }
@@ -424,7 +424,7 @@ function Invoke-PssMcpUpdatePackages {
 # ---------------------------------------------------------------------------
 # JSON-RPC dispatch — pure: string in, @{ StatusCode; Json } out.
 # ---------------------------------------------------------------------------
-function New-PssMcpError {
+function New-StoMcpError {
     param($Id, [int]$Code, [string]$Message)
     @{
         StatusCode = 200
@@ -433,7 +433,7 @@ function New-PssMcpError {
     }
 }
 
-function New-PssMcpResult {
+function New-StoMcpResult {
     param($Id, $Result)
     @{
         StatusCode = 200
@@ -442,7 +442,7 @@ function New-PssMcpResult {
     }
 }
 
-function Invoke-PssMcpRequest {
+function Invoke-StoMcpRequest {
     param(
         [string]$Body,
         [bool]$Authorized = $true
@@ -454,12 +454,12 @@ function Invoke-PssMcpRequest {
     $req = $null
     try { $req = $Body | ConvertFrom-Json -AsHashtable } catch { }
     if ($req -isnot [System.Collections.IDictionary]) {
-        return New-PssMcpError -Id $null -Code -32700 -Message 'parse error: body is not a JSON object'
+        return New-StoMcpError -Id $null -Code -32700 -Message 'parse error: body is not a JSON object'
     }
 
     $method = "$($req['method'])"
     if (-not $method) {
-        return New-PssMcpError -Id $req['id'] -Code -32600 -Message "invalid request: missing 'method'"
+        return New-StoMcpError -Id $req['id'] -Code -32600 -Message "invalid request: missing 'method'"
     }
 
     # notifications (no id) get 202 + empty body per streamable HTTP
@@ -473,40 +473,40 @@ function Invoke-PssMcpRequest {
         'initialize' {
             $clientVer = "$($params['protocolVersion'])"
             $ver = if ($clientVer -in $script:McpProtocolVersions) { $clientVer } else { $script:McpDefaultProtocol }
-            return New-PssMcpResult -Id $id -Result ([ordered]@{
+            return New-StoMcpResult -Id $id -Result ([ordered]@{
                     protocolVersion = $ver
                     capabilities    = [ordered]@{ tools = @{} }
-                    serverInfo      = [ordered]@{ name = 'psscripts'; version = "$(Get-PssAppVersion)" }
+                    serverInfo      = [ordered]@{ name = 'scriptorium'; version = "$(Get-StoAppVersion)" }
                 })
         }
         'ping' {
-            return New-PssMcpResult -Id $id -Result @{}
+            return New-StoMcpResult -Id $id -Result @{}
         }
         'tools/list' {
-            return New-PssMcpResult -Id $id -Result ([ordered]@{ tools = @(Get-PssMcpTools) })
+            return New-StoMcpResult -Id $id -Result ([ordered]@{ tools = @(Get-StoMcpTools) })
         }
         'tools/call' {
             $toolName = "$($params['name'])"
             if (-not $toolName) {
-                return New-PssMcpError -Id $id -Code -32602 -Message "invalid params: missing tool 'name'"
+                return New-StoMcpError -Id $id -Code -32602 -Message "invalid params: missing tool 'name'"
             }
-            if ($toolName -notin @(Get-PssMcpTools | ForEach-Object name)) {
-                $valid = (Get-PssMcpTools | ForEach-Object name) -join ', '
-                return New-PssMcpError -Id $id -Code -32602 -Message "unknown tool '$toolName' — valid tools: $valid"
+            if ($toolName -notin @(Get-StoMcpTools | ForEach-Object name)) {
+                $valid = (Get-StoMcpTools | ForEach-Object name) -join ', '
+                return New-StoMcpError -Id $id -Code -32602 -Message "unknown tool '$toolName' — valid tools: $valid"
             }
             $toolArgs = if ($params['arguments'] -is [System.Collections.IDictionary]) { $params['arguments'] } else { @{} }
             try {
-                $r = Invoke-PssMcpTool -Name $toolName -Arguments $toolArgs
+                $r = Invoke-StoMcpTool -Name $toolName -Arguments $toolArgs
             } catch {
-                return New-PssMcpError -Id $id -Code -32603 -Message "internal error running tool '$toolName': $($_.Exception.Message)"
+                return New-StoMcpError -Id $id -Code -32603 -Message "internal error running tool '$toolName': $($_.Exception.Message)"
             }
-            return New-PssMcpResult -Id $id -Result ([ordered]@{
+            return New-StoMcpResult -Id $id -Result ([ordered]@{
                     content = @(, ([ordered]@{ type = 'text'; text = "$($r.Text)" }))
                     isError = [bool]$r.IsError
                 })
         }
         default {
-            return New-PssMcpError -Id $id -Code -32601 -Message "method not found: $method"
+            return New-StoMcpError -Id $id -Code -32601 -Message "method not found: $method"
         }
     }
 }
@@ -514,7 +514,7 @@ function Invoke-PssMcpRequest {
 # ---------------------------------------------------------------------------
 # The listener loop. Foreground; systemd (or the shell) owns the lifecycle.
 # ---------------------------------------------------------------------------
-function Start-PssMcpServer {
+function Start-StoMcpServer {
     param(
         [int]$Port,
         [string]$BindAddress = 'all',
@@ -533,7 +533,7 @@ function Start-PssMcpServer {
             $ctx = $listener.GetContext()
             $status = 500
             try {
-                $status = Write-PssMcpResponse -Context $ctx -Token $Token
+                $status = Write-StoMcpResponse -Context $ctx -Token $Token
             } catch {
                 try {
                     $ctx.Response.StatusCode = 500
@@ -555,20 +555,20 @@ function Start-PssMcpServer {
 # boot without a terminal. Root gets a system unit; a normal user gets a user
 # unit + lingering. Unit generation is pure for testability.
 # ---------------------------------------------------------------------------
-function Get-PssMcpServiceUnit {
+function Get-StoMcpServiceUnit {
     param(
         [Parameter(Mandatory)][string]$AppDir,
         [Parameter(Mandatory)][string]$PwshPath
     )
     @"
 [Unit]
-Description=psscripts MCP server
+Description=scriptorium MCP server
 After=network.target
 
 [Service]
-ExecStart=$PwshPath -NoProfile -File $AppDir/psscripts.ps1 --mcp
+ExecStart=$PwshPath -NoProfile -File $AppDir/scriptorium.ps1 --mcp
 WorkingDirectory=$AppDir
-# system units without User= don't set HOME, and the app expands ~/.psscripts
+# system units without User= don't set HOME, and the app expands ~/.scriptorium
 # with it — %h is the service manager's home (/root for the system manager)
 Environment=HOME=%h
 Restart=on-failure
@@ -579,43 +579,57 @@ WantedBy=default.target
 "@
 }
 
-function Install-PssMcpService {
+function Install-StoMcpService {
     if (-not $IsLinux) { throw '--install-mcp-service needs systemd (Linux only)' }
     if (-not $env:MCP_AUTH_TOKEN) {
         throw 'MCP_AUTH_TOKEN is not set — add it to .env next to the app first (the service would just crash-loop without it)'
     }
-    $appDir = Get-PssAppDir
+    $appDir = Get-StoAppDir
     $pwshPath = [Environment]::ProcessPath
-    $unit = Get-PssMcpServiceUnit -AppDir $appDir -PwshPath $pwshPath
+    $unit = Get-StoMcpServiceUnit -AppDir $appDir -PwshPath $pwshPath
 
     $isRoot = (& id -u) -eq '0'
     if ($isRoot) {
-        $unitFile = '/etc/systemd/system/psscripts-mcp.service'
+        # retire the pre-rename unit so two servers don't fight over the port
+        $legacyUnit = '/etc/systemd/system/psscripts-mcp.service'
+        if (Test-Path $legacyUnit) {
+            & systemctl disable --now psscripts-mcp 2>$null
+            Remove-Item $legacyUnit -Force -ErrorAction SilentlyContinue
+            Write-Host 'removed pre-rename service: psscripts-mcp'
+        }
+        $unitFile = '/etc/systemd/system/scriptorium-mcp.service'
         $unit | Set-Content -Path $unitFile -Encoding UTF8
         & systemctl daemon-reload
-        & systemctl enable psscripts-mcp
-        & systemctl restart psscripts-mcp   # restart (not enable --now) so re-runs apply changes
+        & systemctl enable scriptorium-mcp
+        & systemctl restart scriptorium-mcp   # restart (not enable --now) so re-runs apply changes
         Write-Host "installed + started system service: $unitFile"
-        Write-Host 'check:   systemctl status psscripts-mcp'
-        Write-Host 'logs:    journalctl -u psscripts-mcp -f'
+        Write-Host 'check:   systemctl status scriptorium-mcp'
+        Write-Host 'logs:    journalctl -u scriptorium-mcp -f'
     } else {
         $unitDir = Join-Path $HOME '.config/systemd/user'
         if (-not (Test-Path $unitDir)) { New-Item -ItemType Directory -Path $unitDir -Force | Out-Null }
-        $unitFile = Join-Path $unitDir 'psscripts-mcp.service'
+        # retire the pre-rename unit so two servers don't fight over the port
+        $legacyUnit = Join-Path $unitDir 'psscripts-mcp.service'
+        if (Test-Path $legacyUnit) {
+            & systemctl --user disable --now psscripts-mcp 2>$null
+            Remove-Item $legacyUnit -Force -ErrorAction SilentlyContinue
+            Write-Host 'removed pre-rename user service: psscripts-mcp'
+        }
+        $unitFile = Join-Path $unitDir 'scriptorium-mcp.service'
         $unit | Set-Content -Path $unitFile -Encoding UTF8
         & systemctl --user daemon-reload
-        & systemctl --user enable psscripts-mcp
-        & systemctl --user restart psscripts-mcp   # restart (not enable --now) so re-runs apply changes
+        & systemctl --user enable scriptorium-mcp
+        & systemctl --user restart scriptorium-mcp   # restart (not enable --now) so re-runs apply changes
         # keep the user manager (and the service) alive with no session open
         & loginctl enable-linger $env:USER
         Write-Host "installed + started user service: $unitFile"
-        Write-Host 'check:   systemctl --user status psscripts-mcp'
-        Write-Host 'logs:    journalctl --user -u psscripts-mcp -f'
+        Write-Host 'check:   systemctl --user status scriptorium-mcp'
+        Write-Host 'logs:    journalctl --user -u scriptorium-mcp -f'
     }
 }
 
 # Handles one HTTP exchange; returns the status code for the request log.
-function Write-PssMcpResponse {
+function Write-StoMcpResponse {
     param($Context, [string]$Token)
     $req = $Context.Request
     $res = $Context.Response
@@ -653,9 +667,9 @@ function Write-PssMcpResponse {
     $auth = "$($req.Headers['Authorization'])"
     $authorized = ($auth -match '^\s*Bearer\s+(.+?)\s*$') -and ($Matches[1] -ceq $Token)
 
-    $r = Invoke-PssMcpRequest -Body $body -Authorized $authorized
+    $r = Invoke-StoMcpRequest -Body $body -Authorized $authorized
     & $sendText ([int]$r.StatusCode) $r.Json
 }
 
-Export-ModuleMember -Function Start-PssMcpServer, Invoke-PssMcpRequest, Get-PssMcpTools, Invoke-PssMcpTool,
-Get-PssMcpServiceUnit, Install-PssMcpService
+Export-ModuleMember -Function Start-StoMcpServer, Invoke-StoMcpRequest, Get-StoMcpTools, Invoke-StoMcpTool,
+Get-StoMcpServiceUnit, Install-StoMcpService

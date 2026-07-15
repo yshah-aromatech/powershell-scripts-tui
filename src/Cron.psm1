@@ -1,10 +1,17 @@
 # Cron.psm1 — cron scheduling via a managed block in the user crontab, plus
 # natural-language -> cron conversion through OpenRouter.
 
-$script:BlockStart = '# >>> psscripts managed block — do not edit by hand >>>'
-$script:BlockEnd = '# <<< psscripts managed block <<<'
+$script:BlockStart = '# >>> scriptorium managed block — do not edit by hand >>>'
+$script:BlockEnd = '# <<< scriptorium managed block <<<'
+# pre-rename (psscripts) markers — still recognized, so an existing block keeps
+# showing its schedules and is rewritten under the new markers on the next save
+$script:LegacyBlockStart = '# >>> psscripts managed block — do not edit by hand >>>'
+$script:LegacyBlockEnd = '# <<< psscripts managed block <<<'
 
-function Get-PssCrontabLines {
+function Test-StoBlockStart { param([string]$Line) $Line -in $script:BlockStart, $script:LegacyBlockStart }
+function Test-StoBlockEnd { param([string]$Line) $Line -in $script:BlockEnd, $script:LegacyBlockEnd }
+
+function Get-StoCrontabLines {
     try {
         $out = & crontab -l 2>$null
         if ($LASTEXITCODE -ne 0 -or $null -eq $out) { return @() }
@@ -13,12 +20,12 @@ function Get-PssCrontabLines {
 }
 
 # script name -> cron expression
-function Get-PssSchedules {
+function Get-StoSchedules {
     $map = @{}
     $inBlock = $false
-    foreach ($line in (Get-PssCrontabLines)) {
-        if ($line -eq $script:BlockStart) { $inBlock = $true; continue }
-        if ($line -eq $script:BlockEnd) { $inBlock = $false; continue }
+    foreach ($line in (Get-StoCrontabLines)) {
+        if (Test-StoBlockStart $line) { $inBlock = $true; continue }
+        if (Test-StoBlockEnd $line) { $inBlock = $false; continue }
         if (-not $inBlock) { continue }
         if ($line -match "--run '([^']+)'") {
             $name = $Matches[1]
@@ -29,19 +36,19 @@ function Get-PssSchedules {
     $map
 }
 
-function Save-PssSchedules {
+function Save-StoSchedules {
     param([Parameter(Mandatory)][hashtable]$Schedules)
-    $cfg = Get-PssConfig
-    $paths = Get-PssPaths
-    $appDir = Get-PssAppDir
+    $cfg = Get-StoConfig
+    $paths = Get-StoPaths
+    $appDir = Get-StoAppDir
     $pwshBin = [string]$cfg.pwshBin
 
     # everything outside the managed block is preserved untouched
     $kept = [System.Collections.Generic.List[string]]::new()
     $inBlock = $false
-    foreach ($line in (Get-PssCrontabLines)) {
-        if ($line -eq $script:BlockStart) { $inBlock = $true; continue }
-        if ($line -eq $script:BlockEnd) { $inBlock = $false; continue }
+    foreach ($line in (Get-StoCrontabLines)) {
+        if (Test-StoBlockStart $line) { $inBlock = $true; continue }
+        if (Test-StoBlockEnd $line) { $inBlock = $false; continue }
         if (-not $inBlock) { $kept.Add($line) }
     }
 
@@ -52,7 +59,7 @@ function Save-PssSchedules {
         foreach ($name in ($Schedules.Keys | Sort-Object)) {
             $expr = $Schedules[$name]
             $log = Join-Path $paths.LogsDir "cron-$name.log"
-            $new.Add("$expr cd '$appDir' && '$pwshBin' -NoProfile -File psscripts.ps1 --run '$name' --cron >> '$log' 2>&1")
+            $new.Add("$expr cd '$appDir' && '$pwshBin' -NoProfile -File scriptorium.ps1 --run '$name' --cron >> '$log' 2>&1")
         }
         $new.Add($script:BlockEnd)
     }
@@ -63,18 +70,18 @@ function Save-PssSchedules {
     $LASTEXITCODE -eq 0
 }
 
-function Set-PssSchedule {
+function Set-StoSchedule {
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Expression)
-    $schedules = Get-PssSchedules
+    $schedules = Get-StoSchedules
     $schedules[$Name] = $Expression
-    Save-PssSchedules -Schedules $schedules
+    Save-StoSchedules -Schedules $schedules
 }
 
-function Remove-PssSchedule {
+function Remove-StoSchedule {
     param([Parameter(Mandatory)][string]$Name)
-    $schedules = Get-PssSchedules
+    $schedules = Get-StoSchedules
     if ($schedules.ContainsKey($Name)) { $schedules.Remove($Name) }
-    Save-PssSchedules -Schedules $schedules
+    Save-StoSchedules -Schedules $schedules
 }
 
 # ---------------------------------------------------------------------------
@@ -95,7 +102,7 @@ $script:CronMonthNames = @{ jan = 1; feb = 2; mar = 3; apr = 4; may = 5; jun = 6
 $script:CronDowNames = @{ sun = 0; mon = 1; tue = 2; wed = 3; thu = 4; fri = 5; sat = 6 }
 
 # Expand one cron field into a sorted int array; $null on parse failure.
-function ConvertFrom-PssCronField {
+function ConvertFrom-StoCronField {
     param([string]$Field, [int]$Min, [int]$Max, [hashtable]$Names = @{})
     $set = [System.Collections.Generic.SortedSet[int]]::new()
     foreach ($part in $Field.Split(',')) {
@@ -134,7 +141,7 @@ function ConvertFrom-PssCronField {
 
 # Next time >= (From + 1 minute) the expression fires; $null when the
 # expression can't be parsed or never fires (@reboot, impossible dates).
-function Get-PssCronNext {
+function Get-StoCronNext {
     param([Parameter(Mandatory)][string]$Expression, [datetime]$From = (Get-Date))
     $e = $Expression.Trim().ToLower()
     if ($e -eq '@reboot') { return $null }
@@ -142,11 +149,11 @@ function Get-PssCronNext {
     $f = $e -split '\s+'
     if ($f.Count -ne 5) { return $null }
 
-    $minutes = ConvertFrom-PssCronField $f[0] 0 59
-    $hours = ConvertFrom-PssCronField $f[1] 0 23
-    $doms = ConvertFrom-PssCronField $f[2] 1 31
-    $months = ConvertFrom-PssCronField $f[3] 1 12 $script:CronMonthNames
-    $dows = ConvertFrom-PssCronField $f[4] 0 7 $script:CronDowNames
+    $minutes = ConvertFrom-StoCronField $f[0] 0 59
+    $hours = ConvertFrom-StoCronField $f[1] 0 23
+    $doms = ConvertFrom-StoCronField $f[2] 1 31
+    $months = ConvertFrom-StoCronField $f[3] 1 12 $script:CronMonthNames
+    $dows = ConvertFrom-StoCronField $f[4] 0 7 $script:CronDowNames
     if ($null -eq $minutes -or $null -eq $hours -or $null -eq $doms -or
         $null -eq $months -or $null -eq $dows) { return $null }
     $dows = @($dows | ForEach-Object { $_ % 7 } | Sort-Object -Unique)   # 7 == sunday
@@ -186,33 +193,33 @@ function Get-PssCronNext {
 # ---------------------------------------------------------------------------
 # Validation + natural language conversion
 # ---------------------------------------------------------------------------
-function Test-PssCronExpression {
+function Test-StoCronExpression {
     param([string]$Expression)
     $e = $Expression.Trim()
     if ($e -match '^@(hourly|daily|weekly|monthly|yearly|annually|reboot|midnight)$') { return $true }
     $fields = $e -split '\s+'
     if ($fields.Count -ne 5) { return $false }
-    # parse every field with the same parser Get-PssCronNext uses — a charset
+    # parse every field with the same parser Get-StoCronNext uses — a charset
     # check isn't enough ("every day at five pm" is 5 fields of letters)
-    $null -ne (ConvertFrom-PssCronField $fields[0] 0 59) -and
-    $null -ne (ConvertFrom-PssCronField $fields[1] 0 23) -and
-    $null -ne (ConvertFrom-PssCronField $fields[2] 1 31) -and
-    $null -ne (ConvertFrom-PssCronField $fields[3] 1 12 $script:CronMonthNames) -and
-    $null -ne (ConvertFrom-PssCronField $fields[4] 0 7 $script:CronDowNames)
+    $null -ne (ConvertFrom-StoCronField $fields[0] 0 59) -and
+    $null -ne (ConvertFrom-StoCronField $fields[1] 0 23) -and
+    $null -ne (ConvertFrom-StoCronField $fields[2] 1 31) -and
+    $null -ne (ConvertFrom-StoCronField $fields[3] 1 12 $script:CronMonthNames) -and
+    $null -ne (ConvertFrom-StoCronField $fields[4] 0 7 $script:CronDowNames)
 }
 
 # Returns @{ Expression; Source = 'literal'|'ai'; Error }
-function Convert-PssToCron {
+function Convert-StoToCron {
     param([Parameter(Mandatory)][string]$Text)
     $t = $Text.Trim()
-    if (Test-PssCronExpression $t) {
+    if (Test-StoCronExpression $t) {
         return @{ Expression = $t; Source = 'literal'; Error = $null }
     }
     $apiKey = $env:OPENROUTER_API_KEY
     if (-not $apiKey) {
         return @{ Expression = $null; Source = 'ai'; Error = 'not a cron expression, and OPENROUTER_API_KEY is not set for natural-language conversion' }
     }
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     try {
         $body = @{
             model    = [string]$cfg.openRouterModel
@@ -229,7 +236,7 @@ function Convert-PssToCron {
         # line that validates as a cron expression
         foreach ($line in ($raw -split '\r?\n')) {
             $expr = $line.Trim()
-            if ($expr -and (Test-PssCronExpression $expr)) {
+            if ($expr -and (Test-StoCronExpression $expr)) {
                 return @{ Expression = $expr; Source = 'ai'; Error = $null }
             }
         }
@@ -239,5 +246,5 @@ function Convert-PssToCron {
     }
 }
 
-Export-ModuleMember -Function Get-PssSchedules, Set-PssSchedule, Remove-PssSchedule,
-Test-PssCronExpression, Convert-PssToCron, Get-PssCronNext, ConvertFrom-PssCronField
+Export-ModuleMember -Function Get-StoSchedules, Set-StoSchedule, Remove-StoSchedule,
+Test-StoCronExpression, Convert-StoToCron, Get-StoCronNext, ConvertFrom-StoCronField

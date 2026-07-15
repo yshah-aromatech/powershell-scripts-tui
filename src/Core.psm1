@@ -46,7 +46,7 @@ function ConvertTo-Ansi256Index {
     if ($grayDist -lt $cubeDist) { $grayIdx } else { $cubeIdx }
 }
 
-function ConvertFrom-PssHex {
+function ConvertFrom-StoHex {
     param([string]$Hex)
     $h = $Hex.TrimStart('#')
     @([Convert]::ToInt32($h.Substring(0, 2), 16),
@@ -56,21 +56,21 @@ function ConvertFrom-PssHex {
 
 function ConvertTo-AnsiFg {
     param([string]$Hex)
-    $r, $g, $b = ConvertFrom-PssHex $Hex
+    $r, $g, $b = ConvertFrom-StoHex $Hex
     if ($script:ColorMode -eq '256') { return "`e[38;5;$(ConvertTo-Ansi256Index $r $g $b)m" }
     "`e[38;2;$r;$g;${b}m"
 }
 
 function ConvertTo-AnsiBg {
     param([string]$Hex)
-    $r, $g, $b = ConvertFrom-PssHex $Hex
+    $r, $g, $b = ConvertFrom-StoHex $Hex
     if ($script:ColorMode -eq '256') { return "`e[48;5;$(ConvertTo-Ansi256Index $r $g $b)m" }
     "`e[48;2;$r;$g;${b}m"
 }
 
 $script:Theme = $null
 
-function Get-PssTheme {
+function Get-StoTheme {
     if (-not $script:Theme) {
         $p = $script:NightOwl
         $script:Theme = @{
@@ -106,7 +106,7 @@ $script:ConfigDefaults = [ordered]@{
     branch            = 'main'
     repos             = @()        # multi-repo: [{name, url, branch}] — overrides scriptsRepo/branch
     pythonBin         = 'python3'  # interpreter used to CREATE venvs (scripts run on the venv's python)
-    dataDir           = '~/.psscripts'
+    dataDir           = '~/.scriptorium'
     n8nWebhookUrl     = ''
     pwshBin           = 'pwsh'
     monitorIntervalMs = 1000
@@ -127,7 +127,7 @@ $script:ConfigDefaults = [ordered]@{
 $script:ConfigNumericKeys = @('monitorIntervalMs', 'logTailKb', 'runTimeoutMinutes',
     'maxOutputLines', 'logRetentionDays', 'historyMaxLines', 'webhookTimeoutSec', 'mcpPort')
 
-function Initialize-Pss {
+function Initialize-Sto {
     param([Parameter(Mandatory)][string]$AppDir)
 
     $script:AppDir = $AppDir
@@ -169,22 +169,39 @@ function Initialize-Pss {
     # app .env -> process environment (existing process env wins)
     $envFile = Join-Path $AppDir '.env'
     if (Test-Path $envFile) {
-        foreach ($kv in (Read-PssEnvFile $envFile).GetEnumerator()) {
+        foreach ($kv in (Read-StoEnvFile $envFile).GetEnumerator()) {
             if (-not (Test-Path "env:$($kv.Key)")) {
                 Set-Item -Path "env:$($kv.Key)" -Value $kv.Value
             }
-            Register-PssSecret -Name $kv.Key -Value $kv.Value
+            Register-StoSecret -Name $kv.Key -Value $kv.Value
         }
     }
     # secrets that may come from the process environment directly
     foreach ($name in 'GITHUB_TOKEN', 'OPENROUTER_API_KEY', 'N8N_WEBHOOK_URL', 'MCP_AUTH_TOKEN') {
         $v = [Environment]::GetEnvironmentVariable($name)
-        if ($v) { Register-PssSecret -Name $name -Value $v }
+        if ($v) { Register-StoSecret -Name $name -Value $v }
     }
 
     # paths
     $dataDir = [string]$cfg.dataDir
     if ($dataDir.StartsWith('~')) { $dataDir = $dataDir -replace '^~', $HOME }
+
+    # one-time migration from the pre-rename data dir (~/.psscripts). Only when
+    # dataDir is the default — an explicit dataDir is never second-guessed.
+    # Venvs survive the move: pip runs as `<venv>/bin/python -m pip`, and the
+    # venv's python resolves pyvenv.cfg relative to itself.
+    if ([string]$cfg.dataDir -eq [string]$script:ConfigDefaults.dataDir -and -not (Test-Path $dataDir)) {
+        $legacyDataDir = Join-Path $HOME '.psscripts'
+        if (Test-Path $legacyDataDir) {
+            try {
+                Move-Item -Path $legacyDataDir -Destination $dataDir -ErrorAction Stop
+                $script:ConfigWarnings.Add("migrated data dir: $legacyDataDir -> $dataDir")
+            } catch {
+                $script:ConfigWarnings.Add("could not migrate $legacyDataDir to ${dataDir}: $($_.Exception.Message) — using the new (empty) dir")
+            }
+        }
+    }
+
     $script:Paths = @{
         AppDir      = $AppDir
         DataDir     = $dataDir
@@ -201,7 +218,7 @@ function Initialize-Pss {
     }
 
     # multi-repo config sanity (the entries themselves are normalized lazily
-    # by Get-PssRepos so env overrides loaded just above apply)
+    # by Get-StoRepos so env overrides loaded just above apply)
     foreach ($r in @($cfg.repos)) {
         if (-not ("$($r.url)")) { $script:ConfigWarnings.Add("config.json: repos entry missing 'url' — skipped") }
         $rName = "$($r.name)"
@@ -210,14 +227,14 @@ function Initialize-Pss {
         }
     }
 
-    Clear-PssOldData
+    Clear-StoOldData
 }
 
 # ---------------------------------------------------------------------------
 # Retention: prune old run logs and cap the history file so a long-lived
 # server never fills its disk. Runs at every startup (TUI and headless).
 # ---------------------------------------------------------------------------
-function Clear-PssOldData {
+function Clear-StoOldData {
     $cfg = $script:Config
     $paths = $script:Paths
     try {
@@ -241,11 +258,11 @@ function Clear-PssOldData {
     } catch { }
 }
 
-function Get-PssConfig { $script:Config }
-function Get-PssConfigWarnings { @($script:ConfigWarnings) }
+function Get-StoConfig { $script:Config }
+function Get-StoConfigWarnings { @($script:ConfigWarnings) }
 
 # scripts repo URL: SCRIPTS_REPO env var (e.g. via .env) overrides config.json
-function Get-PssScriptsRepo {
+function Get-StoScriptsRepo {
     if ($env:SCRIPTS_REPO) { return [string]$env:SCRIPTS_REPO }
     [string]$script:Config.scriptsRepo
 }
@@ -254,7 +271,7 @@ function Get-PssScriptsRepo {
 # configured, each repo clones into ScriptsDir/<Name>; with only the legacy
 # scriptsRepo/branch keys, the single repo stays at ScriptsDir itself (Legacy)
 # so existing installs keep working with zero migration.
-function Get-PssRepos {
+function Get-StoRepos {
     $cfg = $script:Config
     $paths = $script:Paths
     $repos = [System.Collections.Generic.List[object]]::new()
@@ -284,7 +301,7 @@ function Get-PssRepos {
     # missing URL itself)
     $repos.Add([pscustomobject]@{
             Name   = 'scripts'
-            Url    = (Get-PssScriptsRepo)
+            Url    = (Get-StoScriptsRepo)
             Branch = [string]$cfg.branch
             Root   = $paths.ScriptsDir
             Legacy = $true
@@ -292,14 +309,14 @@ function Get-PssRepos {
     $repos
 }
 
-function Get-PssPaths { $script:Paths }
-function Get-PssAppDir { $script:AppDir }
+function Get-StoPaths { $script:Paths }
+function Get-StoAppDir { $script:AppDir }
 
-# Add a repo to config.json's `repos` array (used by `psscripts --add-repo`).
+# Add a repo to config.json's `repos` array (used by `scriptorium --add-repo`).
 # A legacy scriptsRepo config is converted to a repos entry first, so the
 # existing repo keeps syncing (its clone is migrated on the next sync).
 # Returns @{ Ok; Message; Name }.
-function Add-PssRepoConfig {
+function Add-StoRepoConfig {
     param(
         [Parameter(Mandatory)][string]$Url,
         [string]$Name = '',
@@ -349,7 +366,7 @@ function Add-PssRepoConfig {
 # ---------------------------------------------------------------------------
 # .env files
 # ---------------------------------------------------------------------------
-function Read-PssEnvFile {
+function Read-StoEnvFile {
     param([Parameter(Mandatory)][string]$Path)
     $result = [ordered]@{}
     if (-not (Test-Path $Path)) { return $result }
@@ -369,10 +386,10 @@ function Read-PssEnvFile {
     $result
 }
 
-# Documentation-preserving .env.example reader: unlike Read-PssEnvFile, keeps
+# Documentation-preserving .env.example reader: unlike Read-StoEnvFile, keeps
 # the comment block above each KEY=VALUE as that key's description. Returns
 # a list of @{ Key; Default; Comment }.
-function Read-PssEnvDoc {
+function Read-StoEnvDoc {
     param([Parameter(Mandatory)][string]$Path)
     $entries = [System.Collections.Generic.List[object]]::new()
     if (-not (Test-Path $Path)) { return $entries }
@@ -401,7 +418,7 @@ function Read-PssEnvDoc {
 # ---------------------------------------------------------------------------
 # Secret redaction — every secret value is replaced with *** in all output
 # ---------------------------------------------------------------------------
-function Register-PssSecret {
+function Register-StoSecret {
     # -Force registers the value regardless of the variable name — used for
     # per-script .env values, which are by definition config the user chose
     # to keep out of git and out of logs/webhooks.
@@ -412,7 +429,7 @@ function Register-PssSecret {
     if (-not $script:Secrets.Contains($Value)) { $script:Secrets.Add($Value) }
 }
 
-function Hide-PssSecret {
+function Hide-StoSecret {
     param([AllowNull()][AllowEmptyString()][string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return $Text }
     foreach ($s in $script:Secrets) {
@@ -426,7 +443,7 @@ function Hide-PssSecret {
 # cells, combining marks/ZWJ/variation selectors are 0; everything the TUI
 # pads or wraps must go through these or wide characters shear the layout.
 # ---------------------------------------------------------------------------
-function Get-PssCodepointWidth {
+function Get-StoCodepointWidth {
     param([int]$Cp)
     if ($Cp -eq 0x200D -or ($Cp -ge 0x0300 -and $Cp -le 0x036F) -or
         ($Cp -ge 0xFE00 -and $Cp -le 0xFE0F) -or ($Cp -ge 0x20D0 -and $Cp -le 0x20FF)) { return 0 }
@@ -442,7 +459,7 @@ function Get-PssCodepointWidth {
     1
 }
 
-function Get-PssDisplayWidth {
+function Get-StoDisplayWidth {
     param([AllowNull()][AllowEmptyString()][string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return 0 }
     # ASCII fast path — the overwhelmingly common case in the render loop
@@ -451,7 +468,7 @@ function Get-PssDisplayWidth {
     $i = 0
     while ($i -lt $Text.Length) {
         $cp = [char]::ConvertToUtf32($Text, $i)
-        $w += Get-PssCodepointWidth $cp
+        $w += Get-StoCodepointWidth $cp
         $i += [char]::IsSurrogatePair($Text, $i) ? 2 : 1
     }
     $w
@@ -459,7 +476,7 @@ function Get-PssDisplayWidth {
 
 # Truncate to at most $Width display cells and pad with spaces to exactly
 # $Width. $Ellipsis appends … when truncation happens.
-function Format-PssCell {
+function Format-StoCell {
     param([AllowNull()][AllowEmptyString()][string]$Text, [int]$Width, [switch]$Ellipsis)
     if ($Width -le 0) { return '' }
     if ($null -eq $Text) { $Text = '' }
@@ -474,7 +491,7 @@ function Format-PssCell {
     $fit = $Text.Length
     while ($i -lt $Text.Length) {
         $cp = [char]::ConvertToUtf32($Text, $i)
-        $cw = Get-PssCodepointWidth $cp
+        $cw = Get-StoCodepointWidth $cp
         if ($w + $cw -gt $Width) { $fit = $i; break }
         $w += $cw
         $i += [char]::IsSurrogatePair($Text, $i) ? 2 : 1
@@ -482,10 +499,10 @@ function Format-PssCell {
     }
     if ($fit -lt $Text.Length) {
         if ($Ellipsis -and $Width -ge 2) {
-            return (Format-PssCell -Text $Text -Width ($Width - 1)) + '…'
+            return (Format-StoCell -Text $Text -Width ($Width - 1)) + '…'
         }
         $Text = $Text.Substring(0, $fit)
-        $w = Get-PssDisplayWidth $Text
+        $w = Get-StoDisplayWidth $Text
     }
     $Text + (' ' * [Math]::Max(0, $Width - $w))
 }
@@ -494,7 +511,7 @@ function Format-PssCell {
 # Quote-aware argument splitting — `-Message "hello world"` is two tokens,
 # not three. Used by the TUI extra-args prompt and the --args CLI flag.
 # ---------------------------------------------------------------------------
-function Split-PssArguments {
+function Split-StoArguments {
     param([AllowNull()][AllowEmptyString()][string]$Text)
     $result = [System.Collections.Generic.List[string]]::new()
     if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
@@ -520,7 +537,7 @@ function Split-PssArguments {
 # ---------------------------------------------------------------------------
 # Misc helpers
 # ---------------------------------------------------------------------------
-function Get-PssAppVersion {
+function Get-StoAppVersion {
     # short commit of the app checkout — shown in the header, '' if unknown
     try {
         $v = git -C $script:AppDir rev-parse --short HEAD 2>$null
@@ -529,7 +546,7 @@ function Get-PssAppVersion {
     ''
 }
 
-function Format-PssDuration {
+function Format-StoDuration {
     param([double]$Seconds)
     if ($Seconds -lt 60) { return ('{0:n1}s' -f $Seconds) }
     $ts = [TimeSpan]::FromSeconds($Seconds)
@@ -538,7 +555,7 @@ function Format-PssDuration {
 }
 
 # Compact age/eta: 45s, 12m, 3h, 5d — used in the script list and "next run"
-function Format-PssRelativeTime {
+function Format-StoRelativeTime {
     param([double]$Seconds)
     $s = [Math]::Abs($Seconds)
     if ($s -lt 60) { return ('{0}s' -f [int]$s) }
@@ -551,7 +568,7 @@ function Format-PssRelativeTime {
     '{0}d' -f [int][Math]::Floor($s / 86400)
 }
 
-function Copy-PssClipboard {
+function Copy-StoClipboard {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
     foreach ($tool in @(
             @{ Cmd = 'wl-copy'; Args = @() },
@@ -570,8 +587,8 @@ function Copy-PssClipboard {
     'copied via OSC 52'
 }
 
-Export-ModuleMember -Function Initialize-Pss, Get-PssConfig, Get-PssConfigWarnings, Get-PssScriptsRepo, Get-PssRepos, Add-PssRepoConfig,
-Get-PssPaths, Get-PssAppDir, Get-PssAppVersion, Get-PssTheme, Read-PssEnvFile, Read-PssEnvDoc, Register-PssSecret,
-Hide-PssSecret, Format-PssDuration, Format-PssRelativeTime, Copy-PssClipboard,
+Export-ModuleMember -Function Initialize-Sto, Get-StoConfig, Get-StoConfigWarnings, Get-StoScriptsRepo, Get-StoRepos, Add-StoRepoConfig,
+Get-StoPaths, Get-StoAppDir, Get-StoAppVersion, Get-StoTheme, Read-StoEnvFile, Read-StoEnvDoc, Register-StoSecret,
+Hide-StoSecret, Format-StoDuration, Format-StoRelativeTime, Copy-StoClipboard,
 ConvertTo-AnsiFg, ConvertTo-AnsiBg, ConvertTo-Ansi256Index,
-Get-PssDisplayWidth, Get-PssCodepointWidth, Format-PssCell, Split-PssArguments, Clear-PssOldData
+Get-StoDisplayWidth, Get-StoCodepointWidth, Format-StoCell, Split-StoArguments, Clear-StoOldData

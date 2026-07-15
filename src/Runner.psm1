@@ -2,8 +2,8 @@
 # process-tree resource monitoring, timeouts, per-run log files, run history
 # and n8n webhook reporting.
 #
-# A "run handle" is a mutable hashtable the caller polls with Update-PssRun
-# each tick; when the process exits, Complete-PssRun finalizes history +
+# A "run handle" is a mutable hashtable the caller polls with Update-StoRun
+# each tick; when the process exits, Complete-StoRun finalizes history +
 # webhook. The same machinery (Kind='task') runs system tasks (module
 # installs, updates) with streaming but without history/webhook.
 
@@ -25,10 +25,10 @@ $script:CpuCount = [Math]::Max(1, [Environment]::ProcessorCount)
 # runs) of the same script from executing concurrently. The lock file holds
 # the owning process PID; a lock whose owner is dead is stale and reclaimed.
 # ---------------------------------------------------------------------------
-function Lock-PssScript {
+function Lock-StoScript {
     # returns @{ Acquired = $true; File = path } or @{ Acquired = $false; Pid = n }
     param([Parameter(Mandatory)][string]$Name)
-    $paths = Get-PssPaths
+    $paths = Get-StoPaths
     $file = Join-Path $paths.LocksDir "$Name.lock"
     for ($attempt = 0; $attempt -lt 2; $attempt++) {
         try {
@@ -50,7 +50,7 @@ function Lock-PssScript {
     @{ Acquired = $false; Pid = $null }
 }
 
-function Unlock-PssScript {
+function Unlock-StoScript {
     param($Handle)
     if ($Handle.ContainsKey('LockFile') -and $Handle.LockFile) {
         try { Remove-Item $Handle.LockFile -Force -ErrorAction SilentlyContinue } catch { }
@@ -60,9 +60,9 @@ function Unlock-PssScript {
 
 # Read-only probe: is this script currently running (live lock)? Never
 # acquires or reclaims — safe to call from status/reporting paths.
-function Test-PssScriptLocked {
+function Test-StoScriptLocked {
     param([Parameter(Mandatory)][string]$Name)
-    $file = Join-Path (Get-PssPaths).LocksDir "$Name.lock"
+    $file = Join-Path (Get-StoPaths).LocksDir "$Name.lock"
     if (-not (Test-Path $file)) { return $false }
     $ownerPid = $null
     try { $ownerPid = [int](Get-Content $file -Raw -ErrorAction Stop).Trim() } catch { }
@@ -71,9 +71,9 @@ function Test-PssScriptLocked {
 
 # Every script whose lock is held by a live process — catches runs started by
 # this process, cron (--run), the MCP server or another session alike.
-# Read-only like Test-PssScriptLocked: never acquires or reclaims.
-function Get-PssRunningScripts {
-    $dir = (Get-PssPaths).LocksDir
+# Read-only like Test-StoScriptLocked: never acquires or reclaims.
+function Get-StoRunningScripts {
+    $dir = (Get-StoPaths).LocksDir
     if (-not (Test-Path $dir)) { return @() }
     $out = foreach ($f in @(Get-ChildItem $dir -Filter '*.lock' -File -ErrorAction SilentlyContinue)) {
         $ownerPid = $null
@@ -93,7 +93,7 @@ function Get-PssRunningScripts {
 # ---------------------------------------------------------------------------
 # Start a script run (Kind='run') — full pipeline
 # ---------------------------------------------------------------------------
-function Start-PssRun {
+function Start-StoRun {
     param(
         [Parameter(Mandatory)]$Script,
         [string]$Trigger = 'manual',
@@ -101,10 +101,10 @@ function Start-PssRun {
         [hashtable]$ExtraEnv = @{},
         [double]$TimeoutOverride = 0
     )
-    $cfg = Get-PssConfig
-    $paths = Get-PssPaths
+    $cfg = Get-StoConfig
+    $paths = Get-StoPaths
 
-    $lock = Lock-PssScript -Name $Script.Name
+    $lock = Lock-StoScript -Name $Script.Name
     if (-not $lock.Acquired) {
         $who = if ($lock.Pid) { " (pid $($lock.Pid))" } else { '' }
         return @{
@@ -127,7 +127,7 @@ function Start-PssRun {
     if ($isPython) {
         # ensure the venv exists — the dep-install flow normally creates it,
         # but a script with no third-party imports never goes through that
-        $venvPy = Get-PssVenvPython -Script $Script
+        $venvPy = Get-StoVenvPython -Script $Script
         if (-not (Test-Path $venvPy)) {
             & ([string]$cfg.pythonBin) -m venv $Script.VenvDir 2>&1 | Out-Null
             & $venvPy -m pip install --upgrade pip --quiet 2>&1 | Out-Null
@@ -152,15 +152,15 @@ function Start-PssRun {
     # per-script .env -> child environment. Every value is registered as a
     # secret (-Force): these are exactly the values the user chose to keep
     # out of git, so none of them belong in logs or webhook payloads.
-    foreach ($kv in (Read-PssEnvFile $Script.EnvFile).GetEnumerator()) {
+    foreach ($kv in (Read-StoEnvFile $Script.EnvFile).GetEnumerator()) {
         $psi.Environment[$kv.Key] = $kv.Value
-        Register-PssSecret -Name $kv.Key -Value $kv.Value -Force
+        Register-StoSecret -Name $kv.Key -Value $kv.Value -Force
     }
     # caller-supplied per-run env (e.g. MCP run_script) overrides .env; the
     # values may be credentials, so they get the same forced redaction
     foreach ($kv in $ExtraEnv.GetEnumerator()) {
         $psi.Environment["$($kv.Key)"] = "$($kv.Value)"
-        Register-PssSecret -Name "$($kv.Key)" -Value "$($kv.Value)" -Force
+        Register-StoSecret -Name "$($kv.Key)" -Value "$($kv.Value)" -Force
     }
     if (-not $isPython) {
         # per-script module dir gets first crack at module resolution
@@ -168,7 +168,7 @@ function Start-PssRun {
         $psi.Environment['PSModulePath'] = "$($Script.ModuleDir)$sep$($env:PSModulePath)"
     }
 
-    $handle = New-PssHandle -Psi $psi -Kind 'run' -Name $Script.Name -Trigger $Trigger -LogFile $logFile
+    $handle = New-StoHandle -Psi $psi -Kind 'run' -Name $Script.Name -Trigger $Trigger -LogFile $logFile
     $handle.LockFile = $lock.File
     $handle.Runtime = if ($isPython) { 'python' } else { 'powershell' }
     $handle.Repo = if ($null -ne $Script.PSObject.Properties['Repo']) { "$($Script.Repo)" } else { '' }
@@ -184,37 +184,37 @@ function Start-PssRun {
 
 # ---------------------------------------------------------------------------
 # Drive a run handle through the standard poll loop to completion: drain
-# output (via -OnLine), sample resources, then Complete-PssRun. This is the
+# output (via -OnLine), sample resources, then Complete-StoRun. This is the
 # single blocking-caller implementation shared by `--run` and the MCP server;
 # the TUI keeps its own non-blocking tick.
 # ---------------------------------------------------------------------------
-function Invoke-PssRunToCompletion {
+function Invoke-StoRunToCompletion {
     param(
         [Parameter(Mandatory)]$Handle,
         [scriptblock]$OnLine
     )
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     $lastSample = [datetime]::MinValue
-    while (-not (Test-PssRunFinished -Handle $Handle)) {
-        foreach ($line in (Update-PssRun -Handle $Handle)) {
+    while (-not (Test-StoRunFinished -Handle $Handle)) {
+        foreach ($line in (Update-StoRun -Handle $Handle)) {
             if ($OnLine) { & $OnLine $line }
         }
         if (((Get-Date) - $lastSample).TotalMilliseconds -ge [int]$cfg.monitorIntervalMs) {
-            Measure-PssResources -Handle $Handle
+            Measure-StoResources -Handle $Handle
             $lastSample = Get-Date
         }
         Start-Sleep -Milliseconds 50
     }
-    foreach ($line in (Update-PssRun -Handle $Handle)) {
+    foreach ($line in (Update-StoRun -Handle $Handle)) {
         if ($OnLine) { & $OnLine $line }
     }
-    Complete-PssRun -Handle $Handle
+    Complete-StoRun -Handle $Handle
 }
 
 # ---------------------------------------------------------------------------
 # Start a system task (Kind='task') — streamed, no history/webhook
 # ---------------------------------------------------------------------------
-function Start-PssTask {
+function Start-StoTask {
     param(
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$FileName,
@@ -226,10 +226,10 @@ function Start-PssTask {
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    New-PssHandle -Psi $psi -Kind 'task' -Name $Name -Trigger 'manual' -LogFile $null
+    New-StoHandle -Psi $psi -Kind 'task' -Name $Name -Trigger 'manual' -LogFile $null
 }
 
-function New-PssHandle {
+function New-StoHandle {
     param($Psi, [string]$Kind, [string]$Name, [string]$Trigger, [string]$LogFile)
 
     $proc = [System.Diagnostics.Process]::new()
@@ -277,7 +277,7 @@ function New-PssHandle {
 # Poll: drain available output lines (redacted), enforce timeout.
 # Returns the new output lines from this tick.
 # ---------------------------------------------------------------------------
-function Update-PssRun {
+function Update-StoRun {
     param([Parameter(Mandatory)]$Handle)
 
     $lines = [System.Collections.Generic.List[string]]::new()
@@ -300,7 +300,7 @@ function Update-PssRun {
             $line = $null
             try { $line = $Handle[$taskKey].GetAwaiter().GetResult() } catch { $line = $null }
             if ($null -eq $line) { $Handle[$taskKey] = $null; break }   # stream closed
-            $line = Hide-PssSecret $line
+            $line = Hide-StoSecret $line
             $lines.Add($line)
             if ($Handle.LogWriter) { $Handle.LogWriter.WriteLine($line) }
             $Handle[$taskKey] = $reader.ReadLineAsync()
@@ -308,20 +308,20 @@ function Update-PssRun {
     }
 
     # timeout (per-script override, else global config)
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     $timeoutMin = if ($Handle.ContainsKey('TimeoutMinutes')) { [double]$Handle.TimeoutMinutes } else { [double]$cfg.runTimeoutMinutes }
     if ($Handle.Kind -eq 'run' -and $timeoutMin -gt 0 -and $Handle.Status -eq 'running' -and -not $proc.HasExited) {
         $elapsed = ((Get-Date).ToUniversalTime() - $Handle.StartedAt).TotalMinutes
         if ($elapsed -ge $timeoutMin) {
             $lines.Add("run exceeded ${timeoutMin}min timeout — killing")
-            Stop-PssRun -Handle $Handle -Reason 'timeout'
+            Stop-StoRun -Handle $Handle -Reason 'timeout'
         }
     }
 
     $lines
 }
 
-function Test-PssRunFinished {
+function Test-StoRunFinished {
     param([Parameter(Mandatory)]$Handle)
     if ($Handle.ContainsKey('StartError') -and $Handle.StartError) { return $true }
     $Handle.Process.HasExited -and ($null -eq $Handle.OutTask) -and ($null -eq $Handle.ErrTask)
@@ -330,7 +330,7 @@ function Test-PssRunFinished {
 # ---------------------------------------------------------------------------
 # Resource sampling — whole process tree via /proc (CPU% and RSS MB)
 # ---------------------------------------------------------------------------
-function Get-PssTreePids {
+function Get-StoTreePids {
     param([int]$RootPid)
     $children = @{}
     foreach ($dir in [IO.Directory]::EnumerateDirectories('/proc')) {
@@ -355,7 +355,7 @@ function Get-PssTreePids {
     $result
 }
 
-function Measure-PssResources {
+function Measure-StoResources {
     param([Parameter(Mandatory)]$Handle)
     if (-not $script:HasProc) { return }
     if ($Handle.ContainsKey('StartError') -and $Handle.StartError) { return }
@@ -365,7 +365,7 @@ function Measure-PssResources {
     $now = Get-Date
     $jiffies = [long]0
     $rssBytes = [long]0
-    foreach ($p in (Get-PssTreePids -RootPid $proc.Id)) {
+    foreach ($p in (Get-StoTreePids -RootPid $proc.Id)) {
         try {
             $stat = [IO.File]::ReadAllText("/proc/$p/stat")
             $after = ($stat.Substring($stat.LastIndexOf(')') + 2)) -split ' '
@@ -403,7 +403,7 @@ function Measure-PssResources {
 # ---------------------------------------------------------------------------
 # Kill the whole process tree (SIGTERM, then SIGKILL after a grace period)
 # ---------------------------------------------------------------------------
-function Stop-PssRun {
+function Stop-StoRun {
     param([Parameter(Mandatory)]$Handle, [string]$Reason = 'killed')
     $proc = $Handle.Process
     if (-not $proc -or $proc.HasExited) { return }
@@ -413,12 +413,12 @@ function Stop-PssRun {
         try { $proc.Kill($true); $proc.WaitForExit(3000) | Out-Null } catch { }
         return
     }
-    $pids = Get-PssTreePids -RootPid $proc.Id
+    $pids = Get-StoTreePids -RootPid $proc.Id
     foreach ($p in $pids) { & /bin/kill -TERM $p 2>$null }
     $deadline = (Get-Date).AddSeconds(3)
     while (-not $proc.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
     if (-not $proc.HasExited) {
-        foreach ($p in (Get-PssTreePids -RootPid $proc.Id)) { & /bin/kill -KILL $p 2>$null }
+        foreach ($p in (Get-StoTreePids -RootPid $proc.Id)) { & /bin/kill -KILL $p 2>$null }
         try { $proc.WaitForExit(2000) | Out-Null } catch { }
     }
 }
@@ -426,12 +426,12 @@ function Stop-PssRun {
 # ---------------------------------------------------------------------------
 # Finalize: status, history line, webhook. Returns the result object.
 # ---------------------------------------------------------------------------
-function Complete-PssRun {
+function Complete-StoRun {
     param([Parameter(Mandatory)]$Handle)
     if ($Handle.Completed) { return $Handle.Result }
     $Handle.Completed = $true
-    $cfg = Get-PssConfig
-    $paths = Get-PssPaths
+    $cfg = Get-StoConfig
+    $paths = Get-StoPaths
 
     $Handle.FinishedAt = (Get-Date).ToUniversalTime()
     if ($Handle.ContainsKey('StartError') -and $Handle.StartError) {
@@ -443,7 +443,7 @@ function Complete-PssRun {
         $Handle.Status = if ($Handle.ExitCode -eq 0) { 'success' } else { 'failure' }
     }
     if ($Handle.LogWriter) { try { $Handle.LogWriter.Dispose() } catch { } ; $Handle.LogWriter = $null }
-    Unlock-PssScript -Handle $Handle
+    Unlock-StoScript -Handle $Handle
 
     $duration = [Math]::Round(($Handle.FinishedAt - $Handle.StartedAt).TotalSeconds, 1)
     $n = [Math]::Max(1, $Handle.Samples)
@@ -456,8 +456,8 @@ function Complete-PssRun {
     }
     # downsampled per-run series — small enough for history, enough for a sparkline
     if ($Handle.ContainsKey('CpuSeries') -and $Handle.CpuSeries.Count -gt 0) {
-        $resources.cpuSeries = Get-PssDownsampledSeries -Series $Handle.CpuSeries
-        $resources.memSeries = Get-PssDownsampledSeries -Series $Handle.MemSeries
+        $resources.cpuSeries = Get-StoDownsampledSeries -Series $Handle.CpuSeries
+        $resources.memSeries = Get-StoDownsampledSeries -Series $Handle.MemSeries
     }
 
     $result = [ordered]@{
@@ -488,13 +488,13 @@ function Complete-PssRun {
     # webhook gets a log tail
     $payload = [ordered]@{}
     foreach ($k in $result.Keys) { $payload[$k] = $result[$k] }
-    $payload['log'] = Get-PssLogTail -LogFile $Handle.LogFile -TailKb ([int]$cfg.logTailKb)
-    [void](Send-PssWebhook -Payload $payload)
+    $payload['log'] = Get-StoLogTail -LogFile $Handle.LogFile -TailKb ([int]$cfg.logTailKb)
+    [void](Send-StoWebhook -Payload $payload)
     $result
 }
 
 # Max-of-bucket downsampling — peaks survive, which is what you look for
-function Get-PssDownsampledSeries {
+function Get-StoDownsampledSeries {
     param([Parameter(Mandatory)]$Series, [int]$MaxPoints = 60)
     $n = $Series.Count
     if ($n -le $MaxPoints) { return @($Series | ForEach-Object { [Math]::Round($_, 1) }) }
@@ -509,7 +509,7 @@ function Get-PssDownsampledSeries {
     @($out)
 }
 
-function Get-PssLogTail {
+function Get-StoLogTail {
     param([string]$LogFile, [int]$TailKb = 64)
     if (-not $LogFile -or -not (Test-Path $LogFile)) { return '' }
     try {
@@ -529,9 +529,9 @@ function Get-PssLogTail {
 # and re-sent after the next successful delivery, so cron-run reports aren't
 # silently lost.
 # ---------------------------------------------------------------------------
-function Send-PssWebhookRaw {
+function Send-StoWebhookRaw {
     param([Parameter(Mandatory)][string]$Body)
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     $url = if ($env:N8N_WEBHOOK_URL) { $env:N8N_WEBHOOK_URL } else { [string]$cfg.n8nWebhookUrl }
     if (-not $url) { return $false }
     try {
@@ -543,27 +543,27 @@ function Send-PssWebhookRaw {
     }
 }
 
-function Send-PssWebhook {
+function Send-StoWebhook {
     param([Parameter(Mandatory)]$Payload, [switch]$NoQueue)
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     $url = if ($env:N8N_WEBHOOK_URL) { $env:N8N_WEBHOOK_URL } else { [string]$cfg.n8nWebhookUrl }
     if (-not $url) { return $false }
 
     $body = $Payload | ConvertTo-Json -Depth 6
-    $ok = Send-PssWebhookRaw -Body $body
+    $ok = Send-StoWebhookRaw -Body $body
     if (-not $ok) {
         Start-Sleep -Seconds 2
-        $ok = Send-PssWebhookRaw -Body $body
+        $ok = Send-StoWebhookRaw -Body $body
     }
     if ($ok) {
-        Send-PssWebhookQueue
+        Send-StoWebhookQueue
         return $true
     }
     # test events are interactive — the user sees the failure; don't queue them
     if (-not $NoQueue -and "$($Payload['event'])" -ne 'test') {
         try {
             ($Payload | ConvertTo-Json -Depth 6 -Compress) |
-                Add-Content -Path (Get-PssPaths).WebhookQueueFile -Encoding UTF8
+                Add-Content -Path (Get-StoPaths).WebhookQueueFile -Encoding UTF8
         } catch { }
     }
     $false
@@ -571,8 +571,8 @@ function Send-PssWebhook {
 
 # Flush the dead-letter queue: resend in order, stop at the first failure,
 # keep whatever couldn't be sent.
-function Send-PssWebhookQueue {
-    $paths = Get-PssPaths
+function Send-StoWebhookQueue {
+    $paths = Get-StoPaths
     $qf = $paths.WebhookQueueFile
     if (-not (Test-Path $qf)) { return 0 }
     $lines = @(Get-Content $qf -ErrorAction SilentlyContinue | Where-Object { $_ })
@@ -582,7 +582,7 @@ function Send-PssWebhookQueue {
     }
     $sent = 0
     foreach ($line in $lines) {
-        if (Send-PssWebhookRaw -Body $line) { $sent++ } else { break }
+        if (Send-StoWebhookRaw -Body $line) { $sent++ } else { break }
     }
     $remaining = $lines | Select-Object -Skip $sent
     if ($remaining) { $remaining | Set-Content -Path $qf -Encoding UTF8 }
@@ -590,21 +590,21 @@ function Send-PssWebhookQueue {
     $sent
 }
 
-function Send-PssWebhookTest {
+function Send-StoWebhookTest {
     $payload = [ordered]@{
         event = 'test'
         host  = [Environment]::MachineName
         at    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     }
-    Send-PssWebhook -Payload $payload
+    Send-StoWebhook -Payload $payload
 }
 
 # ---------------------------------------------------------------------------
 # Run history
 # ---------------------------------------------------------------------------
-function Get-PssHistory {
+function Get-StoHistory {
     param([int]$Last = 100)
-    $paths = Get-PssPaths
+    $paths = Get-StoPaths
     if (-not (Test-Path $paths.HistoryFile)) { return @() }
     $lines = Get-Content $paths.HistoryFile -Tail $Last -ErrorAction SilentlyContinue
     $items = foreach ($l in $lines) {
@@ -613,11 +613,11 @@ function Get-PssHistory {
     @($items)
 }
 
-function Get-PssLastStatuses {
+function Get-StoLastStatuses {
     # script name -> @{ Status; At (finish [datetime], local); DurationSec;
     # Resources (cpu/mem stats of that run) } of the most recent run
     $map = @{}
-    foreach ($h in (Get-PssHistory -Last 500)) {
+    foreach ($h in (Get-StoHistory -Last 500)) {
         if (-not $h -or -not $h.script) { continue }
         $at = $null
         try { $at = ([datetime]::Parse("$($h.finishedAt)", $null, [Globalization.DateTimeStyles]::AdjustToUniversal)).ToLocalTime() } catch { }
@@ -631,9 +631,9 @@ function Get-PssLastStatuses {
     $map
 }
 
-Export-ModuleMember -Function Start-PssRun, Start-PssTask, Update-PssRun, Test-PssRunFinished,
-Measure-PssResources, Stop-PssRun, Complete-PssRun, Invoke-PssRunToCompletion,
-Send-PssWebhook, Send-PssWebhookTest,
-Send-PssWebhookQueue, Get-PssHistory, Get-PssLastStatuses, Get-PssLogTail,
-Lock-PssScript, Unlock-PssScript, Test-PssScriptLocked, Get-PssRunningScripts,
-Get-PssDownsampledSeries
+Export-ModuleMember -Function Start-StoRun, Start-StoTask, Update-StoRun, Test-StoRunFinished,
+Measure-StoResources, Stop-StoRun, Complete-StoRun, Invoke-StoRunToCompletion,
+Send-StoWebhook, Send-StoWebhookTest,
+Send-StoWebhookQueue, Get-StoHistory, Get-StoLastStatuses, Get-StoLogTail,
+Lock-StoScript, Unlock-StoScript, Test-StoScriptLocked, Get-StoRunningScripts,
+Get-StoDownsampledSeries

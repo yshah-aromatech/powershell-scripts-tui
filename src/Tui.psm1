@@ -11,8 +11,8 @@ $script:AnsiRegex = [regex]'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\a]*\a'
 # ===========================================================================
 # Entry point
 # ===========================================================================
-function Start-PssTui {
-    $cfg = Get-PssConfig
+function Start-StoTui {
+    $cfg = Get-StoConfig
     $script:S = @{
         Quit         = $false
         W            = 0; H = 0
@@ -53,12 +53,12 @@ function Start-PssTui {
         StatusMsgAt  = [datetime]::MinValue
         Tick         = 0
         LastSample   = [datetime]::MinValue
-        AppVersion   = (Get-PssAppVersion)
+        AppVersion   = (Get-StoAppVersion)
         Dirty        = $true
     }
 
     Update-TuiScripts
-    foreach ($w in (Get-PssConfigWarnings)) { Add-TuiOutput @("⚠ $w") }
+    foreach ($w in (Get-StoConfigWarnings)) { Add-TuiOutput @("⚠ $w") }
     if (-not $script:S.Scripts -or $script:S.Scripts.Count -eq 0) {
         Add-TuiOutput @('⚠ no scripts found yet — press s to sync the scripts repo', '')
     }
@@ -70,7 +70,7 @@ function Start-PssTui {
         ) | Where-Object { $_ }) -join ' · '
     if (-not $rtSummary) { $rtSummary = '0' }
     Add-TuiOutput @(
-        "▸ psscripts — $rtSummary script(s) discovered",
+        "▸ scriptorium — $rtSummary script(s) discovered",
         '',
         '   enter  run the selected script      v  edit its .env',
         '   e      schedule it (cron)           s  sync the repos',
@@ -119,14 +119,14 @@ function Start-PssTui {
             # this TUI (cron, MCP, another session) show up and clear promptly
             if (((Get-Date) - $script:S.LastLockPoll).TotalSeconds -ge 2) {
                 $script:S.LastLockPoll = Get-Date
-                $liveRuns = @(Get-PssRunningScripts)
+                $liveRuns = @(Get-StoRunningScripts)
                 $key = @($liveRuns | ForEach-Object { "$($_.Name):$($_.OwnerPid)" }) -join '|'
                 if ($key -ne $script:S.RunningKey) {
                     $script:S.RunningKey = $key
                     $script:S.Running = $liveRuns
                     # an external run starting/finishing also moves the list
                     # badges and the recent-runs card
-                    $script:S.Statuses = Get-PssLastStatuses
+                    $script:S.Statuses = Get-StoLastStatuses
                     $script:S.RecentAt = [datetime]::MinValue
                     $script:S.Dirty = $true
                 }
@@ -152,8 +152,8 @@ function Start-PssTui {
         try {
             if ($script:S.Run -and -not $script:S.Run.StartError -and
                 $script:S.Run.Process -and -not $script:S.Run.Process.HasExited) {
-                Stop-PssRun -Handle $script:S.Run -Reason 'killed'
-                Complete-PssRun -Handle $script:S.Run | Out-Null
+                Stop-StoRun -Handle $script:S.Run -Reason 'killed'
+                Complete-StoRun -Handle $script:S.Run | Out-Null
             }
         } catch { }
         [Console]::Write("`e[?1000;1006l`e[0m`e[?25h`e[?1049l")
@@ -249,7 +249,7 @@ function Copy-TuiCodeAt {
     $pos = -1; $cells = 0; $i = 0
     while ($i -lt $line.Length) {
         $len = if ([char]::IsHighSurrogate($line[$i]) -and ($i + 1) -lt $line.Length) { 2 } else { 1 }
-        $cells += Get-PssDisplayWidth ($line.Substring($i, $len))
+        $cells += Get-StoDisplayWidth ($line.Substring($i, $len))
         if ($Cell -lt $cells) { $pos = $i; break }
         $i += $len
     }
@@ -258,7 +258,7 @@ function Copy-TuiCodeAt {
     $end = $pos; while ($end -lt ($line.Length - 1) -and "$($line[$end + 1])" -notmatch '\s') { $end++ }
     $word = $line.Substring($start, $end - $start + 1).Trim('.', ',', ':', ';', '"', "'", '(', ')')
     if ($word -cmatch '^[A-Z0-9]{8,10}$') {
-        $how = Copy-PssClipboard -Text $word
+        $how = Copy-StoClipboard -Text $word
         Set-TuiStatus "code $word $how" -Kind ok
     }
 }
@@ -267,10 +267,10 @@ function Copy-TuiCodeAt {
 # Data refresh
 # ===========================================================================
 function Update-TuiScripts {
-    $script:S.Scripts = @(Get-PssScripts)
-    $script:S.Statuses = Get-PssLastStatuses
-    $script:S.Schedules = Get-PssSchedules
-    $script:S.LastSync = Get-PssLastSyncTime
+    $script:S.Scripts = @(Get-StoScripts)
+    $script:S.Statuses = Get-StoLastStatuses
+    $script:S.Schedules = Get-StoSchedules
+    $script:S.LastSync = Get-StoLastSyncTime
     Update-TuiVisible
 }
 
@@ -296,7 +296,7 @@ function Get-TuiSelected {
 # ===========================================================================
 function Add-TuiOutput {
     param([string[]]$Lines)
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     foreach ($l in $Lines) {
         $clean = $script:AnsiRegex.Replace("$l", '')
         $script:S.Lines.Add($clean)
@@ -315,7 +315,7 @@ function Add-TuiOutput {
 function Add-TuiBanner {
     param([string]$Text, [switch]$Lead)
     $inset = "─── $Text "
-    $fill = [Math]::Max(0, (Get-TuiWrapWidth) - (Get-PssDisplayWidth $inset))
+    $fill = [Math]::Max(0, (Get-TuiWrapWidth) - (Get-StoDisplayWidth $inset))
     $lines = @($inset + ('─' * $fill))
     if ($Lead) { $lines = @('') + $lines }
     Add-TuiOutput $lines
@@ -334,11 +334,11 @@ function Get-TuiWrappedLine {
     $out = @()
     $s = $Line
     while ($true) {
-        if ((Get-PssDisplayWidth $s) -le $width) { $out += $s; break }
+        if ((Get-StoDisplayWidth $s) -le $width) { $out += $s; break }
         # largest prefix that fits $width cells
         $w = 0; $i = 0; $cut = $s.Length
         while ($i -lt $s.Length) {
-            $cw = Get-PssCodepointWidth ([char]::ConvertToUtf32($s, $i))
+            $cw = Get-StoCodepointWidth ([char]::ConvertToUtf32($s, $i))
             if ($w + $cw -gt $width) { $cut = $i; break }
             $w += $cw
             $i += [char]::IsSurrogatePair($s, $i) ? 2 : 1
@@ -391,7 +391,7 @@ function Start-TuiRunFlow {
         Set-TuiStatus "queued $($Script.Name) (position $($script:S.Queue.Count)) — X clears the queue"
         return
     }
-    $missing = @(Get-PssMissingDeps -Script $Script)
+    $missing = @(Get-StoMissingDeps -Script $Script)
     if ($missing.Count -gt 0) {
         $script:S.Deps = @{ Script = $Script; Missing = $missing; ExtraArgs = $ExtraArgs }
         $script:S.Mode = 'deps'
@@ -404,7 +404,7 @@ function Start-TuiRun {
     param($Script, [string[]]$ExtraArgs = @())
     $script:S.OutTitle = "run: $($Script.Name)"
     Add-TuiBanner -Lead "▶ $($Script.Name) · started $((Get-Date).ToString('HH:mm:ss'))"
-    $script:S.Run = Start-PssRun -Script $Script -Trigger 'manual' -ExtraArgs $ExtraArgs
+    $script:S.Run = Start-StoRun -Script $Script -Trigger 'manual' -ExtraArgs $ExtraArgs
     $script:S.Follow = $true
 }
 
@@ -415,7 +415,7 @@ function Start-TuiTask {
     if ($script:S.Run) { Set-TuiStatus 'something is already running — x to kill it first' -Kind warn; return }
     $script:S.OutTitle = $Name
     Add-TuiBanner -Lead "▶ $Name"
-    $script:S.Run = Start-PssTask -Name $Name -FileName $FileName -Arguments $Arguments
+    $script:S.Run = Start-StoTask -Name $Name -FileName $FileName -Arguments $Arguments
     $script:S.AfterTask = $After
     $script:S.AfterTaskAlways = $AfterAlways
     $script:S.Follow = $true
@@ -423,24 +423,24 @@ function Start-TuiTask {
 
 function Update-TuiRun {
     $h = $script:S.Run
-    $new = @(Update-PssRun -Handle $h)
+    $new = @(Update-StoRun -Handle $h)
     if ($new.Count -gt 0) { Add-TuiOutput $new }
 
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     if (((Get-Date) - $script:S.LastSample).TotalMilliseconds -ge [int]$cfg.monitorIntervalMs) {
-        Measure-PssResources -Handle $h
+        Measure-StoResources -Handle $h
         $script:S.LastSample = Get-Date
     }
 
-    if (Test-PssRunFinished -Handle $h) {
-        $result = Complete-PssRun -Handle $h
+    if (Test-StoRunFinished -Handle $h) {
+        $result = Complete-StoRun -Handle $h
         $script:S.Run = $null
         if ($h.Kind -eq 'run') {
             $r = $result.resources
             $icon = switch ("$($result.status)") {
                 'success' { '✓' } 'failure' { '✗' } 'killed' { '⊘' } 'timeout' { '◷' } 'skipped' { '◇' } default { '·' }
             }
-            Add-TuiBanner "$icon $($result.script) · $($result.status) · exit $($result.exitCode) · $(Format-PssDuration $result.durationSec)"
+            Add-TuiBanner "$icon $($result.script) · $($result.status) · exit $($result.exitCode) · $(Format-StoDuration $result.durationSec)"
             Add-TuiOutput @(
                 "   cpu avg $($r.cpuAvgPercent)% / peak $($r.cpuMaxPercent)%   mem avg $($r.memAvgMb)MB / peak $($r.memMaxMb)MB",
                 "   log: $($result.logFile)"
@@ -477,12 +477,12 @@ function Invoke-TuiSync {
     # runs in a child pwsh via the task machinery so the UI stays responsive
     # during slow clones/fetches (spinner, kill key, scrolling all work)
     if ($script:S.Run) { Set-TuiStatus 'something is already running — x to kill it first' -Kind warn; return }
-    $app = Get-PssAppDir
-    $cfg = Get-PssConfig
+    $app = Get-StoAppDir
+    $cfg = Get-StoConfig
     $cmd = @"
 Import-Module '$app/src/Core.psm1', '$app/src/Scripts.psm1' -DisableNameChecking | Out-Null
-Initialize-Pss -AppDir '$app'
-`$ok = Sync-PssRepo -OnOutput { param(`$l) Write-Host `$l }
+Initialize-Sto -AppDir '$app'
+`$ok = Sync-StoRepo -OnOutput { param(`$l) Write-Host `$l }
 exit ([int](-not `$ok))
 "@
     Start-TuiTask -Name 'sync scripts repo' -FileName ([string]$cfg.pwshBin) `
@@ -497,8 +497,8 @@ exit ([int](-not `$ok))
 function Invoke-TuiDepScan {
     $sel = Get-TuiSelected
     if (-not $sel) { return }
-    $deps = @(Get-PssScriptDeps -Script $sel)
-    $missing = @(Get-PssMissingDeps -Script $sel)
+    $deps = @(Get-StoScriptDeps -Script $sel)
+    $missing = @(Get-StoMissingDeps -Script $sel)
     $script:S.OutTitle = "deps: $($sel.Name)"
     Add-TuiBanner -Lead "▶ dependency scan: $($sel.Name)"
     Add-TuiOutput @(
@@ -516,12 +516,12 @@ function Invoke-TuiLint {
     # py_compile syntax check as the fallback.
     $sel = Get-TuiSelected
     if (-not $sel) { return }
-    $toolsDir = Join-Path (Get-PssPaths).DataDir 'tools'
+    $toolsDir = Join-Path (Get-StoPaths).DataDir 'tools'
     $entryEsc = $sel.Entry -replace "'", "''"
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
 
-    if (Test-PssPythonScript $sel) {
-        $pyEsc = (Get-PssVenvPython -Script $sel) -replace "'", "''"
+    if (Test-StoPythonScript $sel) {
+        $pyEsc = (Get-StoVenvPython -Script $sel) -replace "'", "''"
         $sysPyEsc = ([string]$cfg.pythonBin) -replace "'", "''"
         $cmd = @"
 `$py = '$pyEsc'
@@ -572,19 +572,19 @@ exit ([int](@(`$results | Where-Object Severity -eq 'Error').Count -gt 0))
 
 function Invoke-TuiSelfUpdate {
     if ($script:S.Run) { Set-TuiStatus 'something is already running — x to kill it first' -Kind warn; return }
-    $app = Get-PssAppDir
+    $app = Get-StoAppDir
     Start-TuiTask -Name 'update app (git pull --ff-only)' -FileName 'git' `
         -Arguments @('-C', $app, 'pull', '--ff-only') -AfterAlways {
         param($ok)
-        Set-TuiStatus $(if ($ok) { 'app updated — restart psscripts to apply' } else { 'app update failed' }) -Kind $(if ($ok) { 'ok' } else { 'err' })
+        Set-TuiStatus $(if ($ok) { 'app updated — restart scriptorium to apply' } else { 'app update failed' }) -Kind $(if ($ok) { 'ok' } else { 'err' })
     }
 }
 
 function Invoke-TuiInstallDeps {
     $d = $script:S.Deps
     $script:S.Deps = $null
-    $cfg = Get-PssConfig
-    $cmd = Get-PssInstallCommand -Script $d.Script -Modules $d.Missing
+    $cfg = Get-StoConfig
+    $cmd = Get-StoInstallCommand -Script $d.Script -Modules $d.Missing
     $after = $null
     if (-not $d.InstallOnly) {
         # captured via state, not .GetNewClosure() — see Open-TuiConfirm
@@ -605,14 +605,14 @@ function Invoke-TuiUpdate {
     # module upgrades, then python venv upgrades (the inner scriptblock is
     # self-contained — -After blocks run later, outside this dynamic scope)
     $moduleStage = {
-        $cfg2 = Get-PssConfig
+        $cfg2 = Get-StoConfig
         Start-TuiTask -Name 'upgrade script modules' -FileName ([string]$cfg2.pwshBin) `
-            -Arguments @('-NoProfile', '-NonInteractive', '-Command', (Get-PssModuleUpgradeCommand)) `
+            -Arguments @('-NoProfile', '-NonInteractive', '-Command', (Get-StoModuleUpgradeCommand)) `
             -AfterAlways {
             param($ok)
-            $cfg3 = Get-PssConfig
+            $cfg3 = Get-StoConfig
             Start-TuiTask -Name 'upgrade python venvs' -FileName ([string]$cfg3.pwshBin) `
-                -Arguments @('-NoProfile', '-NonInteractive', '-Command', (Get-PssVenvUpgradeCommand))
+                -Arguments @('-NoProfile', '-NonInteractive', '-Command', (Get-StoVenvUpgradeCommand))
         }
     }
     if ($sudoOk) {
@@ -625,7 +625,7 @@ function Invoke-TuiUpdate {
             'sudo requires a password here. Run manually:',
             '  sudo apt-get update && sudo apt-get install -y --only-upgrade powershell python3 python3-pip python3-venv',
             'or allow it without a password:',
-            "  echo `"`$USER ALL=(root) NOPASSWD: /usr/bin/apt-get`" | sudo tee /etc/sudoers.d/psscripts-apt",
+            "  echo `"`$USER ALL=(root) NOPASSWD: /usr/bin/apt-get`" | sudo tee /etc/sudoers.d/scriptorium-apt",
             'continuing with module + venv upgrades...')
         & $moduleStage
     }
@@ -633,20 +633,20 @@ function Invoke-TuiUpdate {
 
 function Invoke-TuiCopy {
     $text = ($script:S.Lines -join "`n")
-    $how = Copy-PssClipboard -Text $text
+    $how = Copy-StoClipboard -Text $text
     Set-TuiStatus "output $how" -Kind ok
 }
 
 function Invoke-TuiWebhookTest {
     Set-TuiStatus 'sending test event...'
     Show-TuiFrame
-    $ok = Send-PssWebhookTest
+    $ok = Send-StoWebhookTest
     Set-TuiStatus $(if ($ok) { 'webhook test event sent' } else { 'webhook test FAILED — check n8nWebhookUrl' }) -Kind $(if ($ok) { 'ok' } else { 'err' })
 }
 
 function Open-TuiHistory {
     # opens scoped to the highlighted script's own runs; f toggles all scripts
-    $items = @(Get-PssHistory -Last 200)
+    $items = @(Get-StoHistory -Last 200)
     [array]::Reverse($items)
     $sel = Get-TuiSelected
     $script:S.History = @{ Items = $items; Sel = 0; Top = 0; FilterName = "$(if ($sel) { $sel.Name })" }
@@ -670,7 +670,7 @@ function Open-TuiHistoryLog {
         Set-TuiStatus "log file not found: $($item.logFile)" -Kind err
         return
     }
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     $content = @(Get-Content "$($item.logFile)" -Tail ([int]$cfg.maxOutputLines) -ErrorAction SilentlyContinue)
     $script:S.History = $null
     $script:S.Mode = 'list'
@@ -705,19 +705,19 @@ function Open-TuiCronInput {
         $sel2 = Get-TuiSelected
         if (-not $sel2) { return }
         if (-not $value.Trim()) {
-            if (Remove-PssSchedule -Name $sel2.Name) { Set-TuiStatus "schedule removed for $($sel2.Name)" -Kind ok }
+            if (Remove-StoSchedule -Name $sel2.Name) { Set-TuiStatus "schedule removed for $($sel2.Name)" -Kind ok }
             else { Set-TuiStatus 'failed to update crontab' -Kind err }
-            $script:S.Schedules = Get-PssSchedules
+            $script:S.Schedules = Get-StoSchedules
             return
         }
-        $conv = Convert-PssToCron -Text $value
+        $conv = Convert-StoToCron -Text $value
         if (-not $conv.Expression) { Set-TuiStatus "cron: $($conv.Error)" -Kind err; return }
         Open-TuiConfirm -Message "schedule '$($sel2.Name)' as:  $($conv.Expression)  ?" `
             -Data @{ Name = $sel2.Name; Expr = $conv.Expression } -OnYes {
             param($d)
-            if (Set-PssSchedule -Name $d.Name -Expression $d.Expr) { Set-TuiStatus "scheduled $($d.Name) : $($d.Expr)" -Kind ok }
+            if (Set-StoSchedule -Name $d.Name -Expression $d.Expr) { Set-TuiStatus "scheduled $($d.Name) : $($d.Expr)" -Kind ok }
             else { Set-TuiStatus 'failed to update crontab' -Kind err }
-            $script:S.Schedules = Get-PssSchedules
+            $script:S.Schedules = Get-StoSchedules
         }
     }
 }
@@ -811,7 +811,7 @@ function Invoke-TuiKeyList {
                     param($value)
                     $sel2 = Get-TuiSelected
                     if ($sel2) {
-                        Start-TuiRunFlow -Script $sel2 -ExtraArgs @(Split-PssArguments $value)
+                        Start-TuiRunFlow -Script $sel2 -ExtraArgs @(Split-StoArguments $value)
                     }
                 }
             }
@@ -827,7 +827,7 @@ function Invoke-TuiKeyList {
         't' { Invoke-TuiWebhookTest }
         'x' {
             if ($script:S.Run) {
-                Stop-PssRun -Handle $script:S.Run -Reason 'killed'
+                Stop-StoRun -Handle $script:S.Run -Reason 'killed'
                 Set-TuiStatus 'kill signal sent' -Kind warn
             } else { Set-TuiStatus 'nothing is running' }
         }
@@ -992,7 +992,7 @@ function Invoke-TuiKeyEnv {
     if ($ctrl -and $Key.Key -eq 'S') {
         $target = $ed.Script.EnvFile
         ($ed.Lines -join "`n") + "`n" | Set-Content -Path $target -NoNewline -Encoding UTF8
-        foreach ($kv in (Read-PssEnvFile $target).GetEnumerator()) { Register-PssSecret -Name $kv.Key -Value $kv.Value -Force }
+        foreach ($kv in (Read-StoEnvFile $target).GetEnumerator()) { Register-StoSecret -Name $kv.Key -Value $kv.Value -Force }
         $script:S.Env = $null; $script:S.Mode = 'list'
         Set-TuiStatus "saved $(Split-Path $target -Leaf) for $($ed.Script.Name)" -Kind ok
         return
@@ -1144,11 +1144,11 @@ function Get-TuiOutputHeight {
 function Format-TuiPad {
     # display-cell aware pad/truncate (wide chars are 2 cells)
     param([string]$Text, [int]$Width)
-    Format-PssCell -Text $Text -Width $Width -Ellipsis
+    Format-StoCell -Text $Text -Width $Width -Ellipsis
 }
 
 function Show-TuiFrame {
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     $W = $script:S.W; $H = $script:S.H
     if ($W -lt 40 -or $H -lt 10) {
         [Console]::Write("`e[2J`e[Hterminal too small")
@@ -1165,8 +1165,8 @@ function Show-TuiFrame {
     # ---- header -----------------------------------------------------------
     # chip-style: only the title carries the accent fill; the rest of the
     # line is transparent with the repo/host info kept muted on the right
-    $title = ' ▸ psscripts '
-    $repoList = @(Get-PssRepos | Where-Object Url)
+    $title = ' ▸ scriptorium '
+    $repoList = @(Get-StoRepos | Where-Object Url)
     $repo = if ($repoList.Count -gt 1) {
         ($repoList | ForEach-Object Name) -join ' + '
     } elseif ($repoList.Count -eq 1) {
@@ -1175,7 +1175,7 @@ function Show-TuiFrame {
     $ver = if ($script:S.AppVersion) { " · $($script:S.AppVersion)" } else { '' }
     $sync = ''
     if ($script:S.ContainsKey('LastSync') -and $script:S.LastSync) {
-        $sync = " · synced $(Format-PssRelativeTime ((Get-Date) - $script:S.LastSync).TotalSeconds) ago"
+        $sync = " · synced $(Format-StoRelativeTime ((Get-Date) - $script:S.LastSync).TotalSeconds) ago"
     }
     $right = " $repo$sync · $([Environment]::MachineName)$ver "
     if ($title.Length + $right.Length -gt $W) {
@@ -1288,7 +1288,7 @@ function Get-TuiAge {
 
 function Get-TuiListRows {
     param([int]$Count, [int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     $rows = @()
     $items = $script:S.Visible
     $sel = $script:S.Selected
@@ -1363,7 +1363,7 @@ function Get-TuiEnvVarCount {
     $mt = (Get-Item -Force $Script.EnvFile).LastWriteTime
     $c = $script:S.EnvCountCache[$Script.Name]
     if ($c -and $c.At -eq $mt) { return $c.N }
-    $n = @((Read-PssEnvFile $Script.EnvFile).Keys).Count
+    $n = @((Read-StoEnvFile $Script.EnvFile).Keys).Count
     $script:S.EnvCountCache[$Script.Name] = @{ At = $mt; N = $n }
     $n
 }
@@ -1372,25 +1372,25 @@ function Get-TuiEnvVarCount {
 # Details box in python-scripts-tui)
 function Get-TuiDetailRows {
     param([int]$Count, [int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     $sel = Get-TuiSelected
     $pairs = @()   # label, value, value color ('' label = full-width line)
     if ($sel) {
         # entry shown relative to the scripts repo root — the part that varies
         $entry = "$($sel.Entry)"
-        $root = "$((Get-PssPaths).ScriptsDir)"
+        $root = "$((Get-StoPaths).ScriptsDir)"
         if ($root -and $entry.StartsWith($root)) { $entry = $entry.Substring($root.Length).TrimStart('/', '\') }
         else { $entry = $entry.Replace($HOME, '~') }
         $envN = Get-TuiEnvVarCount -Script $sel
-        $mods = if (Test-PssPythonScript $sel) {
-            if (Test-PssVenv -Script $sel) { 'venv ✓' } else { 'venv —' }
+        $mods = if (Test-StoPythonScript $sel) {
+            if (Test-StoVenv -Script $sel) { 'venv ✓' } else { 'venv —' }
         } elseif ($sel.ModuleDir -and (Test-Path $sel.ModuleDir)) { 'mods ✓' } else { 'mods —' }
         $cron = '—'
         if ($script:S.Schedules.ContainsKey($sel.Name)) {
             $expr = $script:S.Schedules[$sel.Name]
             $cron = "$expr$(Get-TuiNextRunHint -Name $sel.Name -Expression $expr)"
         }
-        $isPy = Test-PssPythonScript $sel
+        $isPy = Test-StoPythonScript $sel
         $rtName = if ($isPy) { 'python' } else { 'pwsh' }
         $rtColor = if ($isPy) { $t.Yellow } else { $t.Blue }
         $repoTag = if ($null -ne $sel.PSObject.Properties['Repo'] -and "$($sel.Repo)") { " · $($sel.Repo)" } else { '' }
@@ -1406,8 +1406,8 @@ function Get-TuiDetailRows {
             $icon = switch ("$($last.Status)") {
                 'success' { '✓' } 'failure' { '✗' } 'killed' { '⊘' } 'timeout' { '◷' } 'skipped' { '◇' } default { '·' }
             }
-            $age = if ($last.At) { " · $(Format-PssRelativeTime ((Get-Date) - $last.At).TotalSeconds) ago" } else { '' }
-            $pairs += , @('✦ last:', "$icon $($last.Status) ($(Format-PssDuration ([double]$last.DurationSec)))$age", $statusColor)
+            $age = if ($last.At) { " · $(Format-StoRelativeTime ((Get-Date) - $last.At).TotalSeconds) ago" } else { '' }
+            $pairs += , @('✦ last:', "$icon $($last.Status) ($(Format-StoDuration ([double]$last.DurationSec)))$age", $statusColor)
             $r = $last.Resources   # absent on records from before this field existed
             if ($r) {
                 $pairs += , @('  cpu:', "avg $($r.cpuAvgPercent)% · max $($r.cpuMaxPercent)%", $t.Fg)
@@ -1443,7 +1443,7 @@ function Get-TuiDetailRows {
 # files, so runs launched by cron/MCP/another session show up too
 function Get-TuiActivityRows {
     param([int]$Count, [int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     $rows = @()
     $running = @($script:S.Running)
     if ($running.Count -eq 0) {
@@ -1455,7 +1455,7 @@ function Get-TuiActivityRows {
         for ($i = 0; $i -lt $show; $i++) {
             $r = $running[$i]
             $src = if ($r.External) { 'cron/external' } else { 'this session' }
-            $el = Format-PssRelativeTime ((Get-Date) - $r.StartedAt).TotalSeconds
+            $el = Format-StoRelativeTime ((Get-Date) - $r.StartedAt).TotalSeconds
             $rows += "$($t.BrCyan)$(Format-TuiPad -Text " $spin $($r.Name) · running $el · pid $($r.OwnerPid) · $src" -Width $Width)"
         }
         if ($running.Count -gt $show) {
@@ -1474,7 +1474,7 @@ function Get-TuiActivityRows {
 # lock poll invalidate it via RecentAt
 function Get-TuiRecentRuns {
     if (((Get-Date) - $script:S.RecentAt).TotalSeconds -lt 3) { return @($script:S.RecentRuns) }
-    $items = @(Get-PssHistory -Last 12)
+    $items = @(Get-StoHistory -Last 12)
     [array]::Reverse($items)
     $script:S.RecentRuns = $items
     $script:S.RecentAt = Get-Date
@@ -1484,7 +1484,7 @@ function Get-TuiRecentRuns {
 # bottom-right card: the app's most recent runs across all scripts
 function Get-TuiRecentRows {
     param([int]$Count, [int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     $rows = @()
     $items = @(Get-TuiRecentRuns | Select-Object -First $Count)
     if ($items.Count -eq 0) {
@@ -1504,9 +1504,9 @@ function Get-TuiRecentRows {
         # normalize to local before subtracting from Get-Date
         $started = $h.startedAt -as [datetime]
         if ($started) { $started = $started.ToLocalTime() }
-        $age = if ($started) { "$(Format-PssRelativeTime ((Get-Date) - $started).TotalSeconds) ago" } else { '' }
+        $age = if ($started) { "$(Format-StoRelativeTime ((Get-Date) - $started).TotalSeconds) ago" } else { '' }
         $line = ' {0} {1} {2}  {3,-7} {4}' -f $icon,
-        (Format-PssCell -Text "$($h.script)" -Width $nameW -Ellipsis), $rt, $word, $age
+        (Format-StoCell -Text "$($h.script)" -Width $nameW -Ellipsis), $rt, $word, $age
         $rows += "$color$(Format-TuiPad -Text $line -Width $Width)"
     }
     while ($rows.Count -lt $Count) { $rows += (' ' * $Width) }
@@ -1523,7 +1523,7 @@ function Get-TuiMoreBelow {
 
 function Get-TuiOutputRows {
     param([int]$Count, [int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     switch ($script:S.Mode) {
         'env' { return Get-TuiEnvRows -Count $Count -Width $Width }
         'history' { return Get-TuiHistoryRows -Count $Count -Width $Width }
@@ -1574,7 +1574,7 @@ function Get-TuiOutputRows {
 
 function Get-TuiEnvRows {
     param([int]$Count, [int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     $ed = $script:S.Env
     $rows = @()
     $dirtyMark = if ($ed.Dirty) { ' *' } else { '' }
@@ -1635,7 +1635,7 @@ function Get-TuiSparkline {
 
 function Get-TuiHistoryRows {
     param([int]$Count, [int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     $hi = $script:S.History
     $items = Get-TuiHistoryItems
     $rows = @()
@@ -1645,10 +1645,10 @@ function Get-TuiHistoryRows {
     # script column sized to the longest name on file (clamped) so long names
     # can't shear the columns to their right; anything longer is ellipsized
     $scriptW = 6
-    foreach ($it in $items) { $scriptW = [Math]::Max($scriptW, (Get-PssDisplayWidth "$($it.script)")) }
+    foreach ($it in $items) { $scriptW = [Math]::Max($scriptW, (Get-StoDisplayWidth "$($it.script)")) }
     $scriptW = [Math]::Min($scriptW, 28)
     $fmt = ' {0,-11} {1,4}  {2,-9} {3} {4,8}  cpu {5,6} {6}  mem {7,9}  {8}'
-    $hdr = $fmt -f 'when', 'age', 'status', (Format-PssCell -Text 'script' -Width $scriptW),
+    $hdr = $fmt -f 'when', 'age', 'status', (Format-StoCell -Text 'script' -Width $scriptW),
     'duration', 'peak', 'trend'.PadRight(10), 'peak', 'trigger'
     $rows += "$($t.Muted)$(Format-TuiPad -Text $hdr -Width $Width)"
 
@@ -1679,12 +1679,12 @@ function Get-TuiHistoryRows {
         $started = $h.startedAt -as [datetime]
         if ($started) { $started = $started.ToLocalTime() }
         $when = if ($started) { $started.ToString('MM-dd HH:mm') } else { "$($h.startedAt)" }
-        $age = if ($started) { Format-PssRelativeTime ((Get-Date) - $started).TotalSeconds } else { '' }
+        $age = if ($started) { Format-StoRelativeTime ((Get-Date) - $started).TotalSeconds } else { '' }
         $res = $h.resources
         $spark = Get-TuiSparkline -Series $res.cpuSeries -Width 10
         $line = $fmt -f
-        $when, $age, $h.status, (Format-PssCell -Text "$($h.script)" -Width $scriptW -Ellipsis),
-        (Format-PssDuration ([double]$h.durationSec)),
+        $when, $age, $h.status, (Format-StoCell -Text "$($h.script)" -Width $scriptW -Ellipsis),
+        (Format-StoDuration ([double]$h.durationSec)),
         "$($res.cpuMaxPercent)%", $spark, "$($res.memMaxMb)MB", "[$($h.trigger)]"
         if ($idx -eq $hi.Sel) {
             # accent bar replaces the leading space on the selected row
@@ -1698,7 +1698,7 @@ function Get-TuiHistoryRows {
 
 function Get-TuiHelpRows {
     param([int]$Count, [int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     # ('#', title) rows render as section headers; ('', text) as plain lines
     $entries = @(
         @('#', '▶ run'),
@@ -1747,7 +1747,7 @@ function Get-TuiHelpRows {
 
 function Get-TuiStatusLine {
     param([int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
 
     switch ($script:S.Mode) {
         'deps' {
@@ -1758,12 +1758,12 @@ function Get-TuiStatusLine {
             # elide the module list so a long one can't overflow the row
             $prefix = " ▲ missing modules for $($d.Script.Name): "
             $suffix = "  —  y $verb  n $alt  esc cancel"
-            $avail = $Width - (Get-PssDisplayWidth $prefix) - $suffix.Length
-            if ($avail -gt 1 -and (Get-PssDisplayWidth $names) -gt $avail) {
-                $names = (Format-PssCell -Text $names -Width $avail -Ellipsis).TrimEnd()
+            $avail = $Width - (Get-StoDisplayWidth $prefix) - $suffix.Length
+            if ($avail -gt 1 -and (Get-StoDisplayWidth $names) -gt $avail) {
+                $names = (Format-StoCell -Text $names -Width $avail -Ellipsis).TrimEnd()
             }
             $plain = "$prefix$names$suffix"
-            $pad = [Math]::Max(0, $Width - (Get-PssDisplayWidth $plain))
+            $pad = [Math]::Max(0, $Width - (Get-StoDisplayWidth $plain))
             return " $($t.BrYellow)▲ missing modules for $($d.Script.Name): $names$($t.Fg)  —  $($t.Green)y$($t.Fg) $verb  $($t.Yellow)n$($t.Fg) $alt  $($t.Muted)esc cancel$(' ' * $pad)"
         }
         'input' {
@@ -1792,12 +1792,12 @@ function Get-TuiStatusLine {
         $el = ((Get-Date).ToUniversalTime() - $h.StartedAt).TotalSeconds
         $cpu = if ($h.ContainsKey('CpuNow')) { '{0:n1}' -f $h.CpuNow } else { '—' }
         $mem = if ($h.ContainsKey('MemNow')) { '{0:n0}' -f $h.MemNow } else { '—' }
-        $left = " ▶ running $($h.Name)  $(Format-PssDuration $el)  cpu $cpu%  mem ${mem}MB$queueTxt"
+        $left = " ▶ running $($h.Name)  $(Format-StoDuration $el)  cpu $cpu%  mem ${mem}MB$queueTxt"
     } elseif ($script:S.Run) {
         $h = $script:S.Run
         $el = ''
         if ($h.ContainsKey('StartedAt')) {
-            $el = "  $(Format-PssDuration ((Get-Date).ToUniversalTime() - $h.StartedAt).TotalSeconds)"
+            $el = "  $(Format-StoDuration ((Get-Date).ToUniversalTime() - $h.StartedAt).TotalSeconds)"
         }
         $left = " ▶ running: $($h.Name)$el$queueTxt"
     } elseif (((Get-Date) - $script:S.StatusMsgAt).TotalSeconds -lt 6 -and $script:S.StatusMsg) {
@@ -1826,16 +1826,16 @@ function Get-TuiNextRunHint {
     $now = Get-Date
     $c = $script:S.NextRunCache[$Name]
     if (-not $c -or $c.Expr -ne $Expression -or ($c.At -and $c.At -le $now) -or (-not $c.At -and $c.ComputedAt.AddMinutes(1) -le $now)) {
-        $c = @{ Expr = $Expression; At = (Get-PssCronNext -Expression $Expression -From $now); ComputedAt = $now }
+        $c = @{ Expr = $Expression; At = (Get-StoCronNext -Expression $Expression -From $now); ComputedAt = $now }
         $script:S.NextRunCache[$Name] = $c
     }
     if (-not $c.At) { return '' }
-    " · next in $(Format-PssRelativeTime (($c.At) - $now).TotalSeconds)"
+    " · next in $(Format-StoRelativeTime (($c.At) - $now).TotalSeconds)"
 }
 
 function Get-TuiKeyHints {
     param([int]$Width)
-    $t = Get-PssTheme
+    $t = Get-StoTheme
     # footer follows the active mode — showing list keys while e.g. the env
     # editor is open would advertise bindings that don't work there
     $pairs = switch ($script:S.Mode) {
@@ -1879,4 +1879,4 @@ function Get-TuiKeyHints {
     "$out$(' ' * $pad)"
 }
 
-Export-ModuleMember -Function Start-PssTui
+Export-ModuleMember -Function Start-StoTui

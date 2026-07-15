@@ -6,7 +6,7 @@ BeforeAll {
     New-Item -ItemType Directory -Path $script:appDir -Force | Out-Null
     @{ dataDir = (Join-Path $script:appDir 'data') } | ConvertTo-Json |
         Set-Content (Join-Path $script:appDir 'config.json')
-    Initialize-Pss -AppDir $script:appDir
+    Initialize-Sto -AppDir $script:appDir
 
     $script:tui = Get-Module Tui
 
@@ -47,8 +47,8 @@ Describe 'cron schedule flow' {
     It 'confirm callback resolves module-internal functions (GetNewClosure scope regression)' {
         # a .GetNewClosure() OnYes rebinds to a dynamic module where internal
         # functions like Set-TuiStatus do not resolve — this drives e → enter → y
-        Mock -ModuleName Tui Set-PssSchedule { $true }
-        Mock -ModuleName Tui Get-PssSchedules { @{} }
+        Mock -ModuleName Tui Set-StoSchedule { $true }
+        Mock -ModuleName Tui Get-StoSchedules { @{} }
         $r = & $script:tui {
             $script:S.Mode = 'list'; $script:S.Selected = 0; $script:S.StatusMsg = ''
             Open-TuiCronInput
@@ -65,7 +65,7 @@ Describe 'cron schedule flow' {
     }
 
     It 'install-deps continuation reaches Start-TuiRun without closure scope errors' {
-        Mock -ModuleName Tui Get-PssInstallCommand { 'noop' }
+        Mock -ModuleName Tui Get-StoInstallCommand { 'noop' }
         Mock -ModuleName Tui Start-TuiTask { $script:CapturedAfter = $After }
         Mock -ModuleName Tui Start-TuiRun { }
         & $script:tui {
@@ -85,7 +85,7 @@ Describe 'list rows' {
         foreach ($r in $rows) {
             # strip ANSI, measure display cells
             $plain = [regex]::Replace($r, "`e\[[0-9;]*m", '')
-            Get-PssDisplayWidth $plain | Should -Be 30
+            Get-StoDisplayWidth $plain | Should -Be 30
         }
     }
 
@@ -104,7 +104,7 @@ Describe 'list rows' {
         $sel | Should -Match '^▎'
         $other | Should -Match '^ '
         # accent bar must not change the row width
-        Get-PssDisplayWidth $sel | Should -Be 30
+        Get-StoDisplayWidth $sel | Should -Be 30
     }
 
     It 'highlights the filter substring in matching rows' {
@@ -114,7 +114,7 @@ Describe 'list rows' {
             $script:S.Filter = ''
             $r
         }
-        $t = & $script:tui { Get-PssTheme }
+        $t = & $script:tui { Get-StoTheme }
         $row | Should -Match ([regex]::Escape("$($t.BrCyan)alp"))
     }
 
@@ -140,7 +140,7 @@ Describe 'detail rows' {
         $rows.Count | Should -Be 8
         foreach ($r in $rows) {
             $plain = [regex]::Replace($r, "`e\[[0-9;]*m", '')
-            Get-PssDisplayWidth $plain | Should -Be 30
+            Get-StoDisplayWidth $plain | Should -Be 30
         }
     }
 
@@ -392,7 +392,7 @@ Describe 'status line' {
             $r
         }
         $plain = [regex]::Replace($line, "`e\[[0-9;]*m", '')
-        (Get-PssDisplayWidth $plain) | Should -BeLessOrEqual 80
+        (Get-StoDisplayWidth $plain) | Should -BeLessOrEqual 80
         $plain | Should -Match '…'
         $plain | Should -Match 'esc cancel'
     }
@@ -406,7 +406,7 @@ Describe 'status line' {
             $script:S.StatusMsg = ''; $script:S.StatusKind = 'info'
             @($ok, $err)
         }
-        $t = & $script:tui { Get-PssTheme }
+        $t = & $script:tui { Get-StoTheme }
         $lines[0] | Should -Match ([regex]::Escape($t.Green))
         [regex]::Replace($lines[0], "`e\[[0-9;]*m", '') | Should -Match '✓ sync complete'
         $lines[1] | Should -Match ([regex]::Escape($t.Red))
@@ -432,10 +432,10 @@ Describe 'banners' {
             Add-TuiBanner '✓ alpha · success'
             Add-TuiBanner '✗ beta · failure'
             Add-TuiBanner '▶ gamma · started'
-            $t = Get-PssTheme
+            $t = Get-StoTheme
             $rows = Get-TuiOutputRows -Count 3 -Width 40
             $res = @(
-                ((Get-PssDisplayWidth $script:S.Wrapped[0]) -eq (Get-TuiWrapWidth)),
+                ((Get-StoDisplayWidth $script:S.Wrapped[0]) -eq (Get-TuiWrapWidth)),
                 $rows[0].StartsWith($t.Green),
                 $rows[1].StartsWith($t.Red),
                 $rows[2].StartsWith($t.Blue)
@@ -461,7 +461,7 @@ Describe 'output row coloring' {
                 'Invoke-Thing -ErrorAction Stop',
                 'running error-report'
             )
-            $t = Get-PssTheme
+            $t = Get-StoTheme
             $rows = Get-TuiOutputRows -Count 5 -Width 60
             $r = @($rows | ForEach-Object { $_.StartsWith($t.Red) })
             $script:S.Lines.Clear(); $script:S.Wrapped.Clear(); $script:S.Follow = $true
@@ -532,7 +532,7 @@ Describe 'output search' {
             $script:S.Lines.Clear(); $script:S.Wrapped.Clear()
             Add-TuiOutput @('the needle is here')
             $script:S.SearchTerm = 'NEEDLE'
-            $t = Get-PssTheme
+            $t = Get-StoTheme
             $rows = Get-TuiOutputRows -Count 3 -Width 40
             $r = $rows[0].Contains("$($t.SelBg)$($t.White)needle")
             $script:S.SearchTerm = ''; $script:S.Lines.Clear(); $script:S.Wrapped.Clear()

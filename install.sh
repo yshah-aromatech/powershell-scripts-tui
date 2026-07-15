@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # install.sh — installs prerequisites (git, PowerShell 7), clones/updates the
 # app if needed, creates config.json and .env from the examples, and adds a
-# `psscripts` launcher to ~/.local/bin.
+# `scriptorium` launcher to ~/.local/bin.
 #
 # Works two ways:
-#   curl -fsSL https://raw.githubusercontent.com/yshah-aromatech/powershell-scripts-tui/main/install.sh | bash
-#   git clone ... && cd powershell-scripts-tui && ./install.sh
+#   curl -fsSL https://raw.githubusercontent.com/yshah-aromatech/scriptorium/main/install.sh | bash
+#   git clone ... && cd scriptorium && ./install.sh
 #
-# Set PSSCRIPTS_APP_DIR to control where the one-liner clones the app
-# (default: ~/powershell-scripts-tui).
+# Set SCRIPTORIUM_APP_DIR to control where the one-liner clones the app
+# (default: ~/scriptorium).
 set -euo pipefail
 
-REPO_URL="https://github.com/yshah-aromatech/powershell-scripts-tui.git"
+REPO_URL="https://github.com/yshah-aromatech/scriptorium.git"
 
 say() { printf '\033[38;2;130;170;255m==>\033[0m %s\n' "$*"; }
 
@@ -44,10 +44,16 @@ say "python3: $(python3 --version 2>/dev/null || echo 'not installed')"
 # When run from a checkout, install in place. When piped (curl | bash) there is
 # no source file on disk, so clone (or update) the app first.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-/dev/null}")" 2>/dev/null && pwd || true)"
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/psscripts.ps1" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/scriptorium.ps1" ]; then
   APP_DIR="$SCRIPT_DIR"
 else
-  APP_DIR="${PSSCRIPTS_APP_DIR:-$HOME/powershell-scripts-tui}"
+  # PSSCRIPTS_APP_DIR + ~/powershell-scripts-tui are the pre-rename fallbacks:
+  # an existing install keeps updating in place instead of being re-cloned
+  APP_DIR="${SCRIPTORIUM_APP_DIR:-${PSSCRIPTS_APP_DIR:-$HOME/scriptorium}}"
+  if [ ! -d "$APP_DIR/.git" ] && [ -d "$HOME/powershell-scripts-tui/.git" ]; then
+    APP_DIR="$HOME/powershell-scripts-tui"
+    say "found pre-rename install at $APP_DIR — updating it in place"
+  fi
   if [ -d "$APP_DIR/.git" ]; then
     say "existing install found at $APP_DIR — updating..."
     git -C "$APP_DIR" pull --ff-only
@@ -64,16 +70,22 @@ cd "$APP_DIR"
 
 # --- launcher ---------------------------------------------------------------
 mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/psscripts" <<EOF
+cat > "$HOME/.local/bin/scriptorium" <<EOF
 #!/usr/bin/env bash
-exec pwsh -NoProfile -File '$APP_DIR/psscripts.ps1' "\$@"
+exec pwsh -NoProfile -File '$APP_DIR/scriptorium.ps1' "\$@"
 EOF
-chmod +x "$HOME/.local/bin/psscripts"
-say "launcher installed: ~/.local/bin/psscripts"
+chmod +x "$HOME/.local/bin/scriptorium"
+say "launcher installed: ~/.local/bin/scriptorium"
+
+# pre-rename launcher: keep the old command working, pointed at the new one
+if [ -e "$HOME/.local/bin/psscripts" ]; then
+  ln -sf "$HOME/.local/bin/scriptorium" "$HOME/.local/bin/psscripts"
+  say "legacy 'psscripts' launcher now points at scriptorium"
+fi
 
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) say "NOTE: ~/.local/bin is not on your PATH — add: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
 
-say "done. Edit $APP_DIR/config.json + .env, then run: psscripts"
+say "done. Edit $APP_DIR/config.json + .env, then run: scriptorium"

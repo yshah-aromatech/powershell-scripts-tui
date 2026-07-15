@@ -2,89 +2,89 @@ BeforeAll {
     foreach ($m in 'Core', 'Scripts', 'Deps', 'Runner') {
         Import-Module (Join-Path $PSScriptRoot "../src/$m.psm1") -Force -DisableNameChecking
     }
-    # isolated app + data dir so tests never touch ~/.psscripts
+    # isolated app + data dir so tests never touch ~/.scriptorium
     $script:appDir = Join-Path ([IO.Path]::GetTempPath()) "pss-runner-tests-$(New-Guid)"
     New-Item -ItemType Directory -Path $script:appDir -Force | Out-Null
     @{ dataDir = (Join-Path $script:appDir 'data') } | ConvertTo-Json |
         Set-Content (Join-Path $script:appDir 'config.json')
-    Initialize-Pss -AppDir $script:appDir
+    Initialize-Sto -AppDir $script:appDir
 }
 
 AfterAll {
     Remove-Item $script:appDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Describe 'Lock-PssScript / Unlock-PssScript' {
+Describe 'Lock-StoScript / Unlock-StoScript' {
     It 'acquires and blocks a second acquire' {
-        $l1 = Lock-PssScript -Name 'lock-a'
+        $l1 = Lock-StoScript -Name 'lock-a'
         $l1.Acquired | Should -BeTrue
-        (Lock-PssScript -Name 'lock-a').Acquired | Should -BeFalse
-        Unlock-PssScript -Handle @{ LockFile = $l1.File }
+        (Lock-StoScript -Name 'lock-a').Acquired | Should -BeFalse
+        Unlock-StoScript -Handle @{ LockFile = $l1.File }
     }
 
     It 'reports the owning pid' {
-        $l1 = Lock-PssScript -Name 'lock-b'
-        (Lock-PssScript -Name 'lock-b').Pid | Should -Be $PID
-        Unlock-PssScript -Handle @{ LockFile = $l1.File }
+        $l1 = Lock-StoScript -Name 'lock-b'
+        (Lock-StoScript -Name 'lock-b').Pid | Should -Be $PID
+        Unlock-StoScript -Handle @{ LockFile = $l1.File }
     }
 
     It 'reclaims a stale lock whose owner is dead' {
-        $stale = Join-Path (Get-PssPaths).LocksDir 'lock-c.lock'
+        $stale = Join-Path (Get-StoPaths).LocksDir 'lock-c.lock'
         '999999' | Set-Content $stale
-        $l = Lock-PssScript -Name 'lock-c'
+        $l = Lock-StoScript -Name 'lock-c'
         $l.Acquired | Should -BeTrue
-        Unlock-PssScript -Handle @{ LockFile = $l.File }
+        Unlock-StoScript -Handle @{ LockFile = $l.File }
     }
 
     It 'can re-acquire after unlock' {
-        $l1 = Lock-PssScript -Name 'lock-d'
-        Unlock-PssScript -Handle @{ LockFile = $l1.File }
-        (Lock-PssScript -Name 'lock-d').Acquired | Should -BeTrue
+        $l1 = Lock-StoScript -Name 'lock-d'
+        Unlock-StoScript -Handle @{ LockFile = $l1.File }
+        (Lock-StoScript -Name 'lock-d').Acquired | Should -BeTrue
     }
 }
 
-Describe 'Get-PssRunningScripts' {
+Describe 'Get-StoRunningScripts' {
     It 'lists live locks and skips stale ones' {
-        $l = Lock-PssScript -Name 'run-live'
-        $stale = Join-Path (Get-PssPaths).LocksDir 'run-stale.lock'
+        $l = Lock-StoScript -Name 'run-live'
+        $stale = Join-Path (Get-StoPaths).LocksDir 'run-stale.lock'
         '999999' | Set-Content $stale
         try {
-            $running = @(Get-PssRunningScripts)
+            $running = @(Get-StoRunningScripts)
             @($running | ForEach-Object Name) | Should -Contain 'run-live'
             @($running | ForEach-Object Name) | Should -Not -Contain 'run-stale'
             $live = $running | Where-Object Name -eq 'run-live'
             $live.OwnerPid | Should -Be $PID
             $live.External | Should -BeFalse
         } finally {
-            Unlock-PssScript -Handle @{ LockFile = $l.File }
+            Unlock-StoScript -Handle @{ LockFile = $l.File }
             Remove-Item $stale -Force -ErrorAction SilentlyContinue
         }
     }
 
     It 'returns an empty array when nothing holds a live lock' {
         # earlier lock tests may leave locks behind — clear them first
-        Get-ChildItem (Get-PssPaths).LocksDir -Filter '*.lock' -ErrorAction SilentlyContinue | Remove-Item -Force
-        @(Get-PssRunningScripts).Count | Should -Be 0
+        Get-ChildItem (Get-StoPaths).LocksDir -Filter '*.lock' -ErrorAction SilentlyContinue | Remove-Item -Force
+        @(Get-StoRunningScripts).Count | Should -Be 0
     }
 }
 
-Describe 'Start-PssRun skip behavior' {
+Describe 'Start-StoRun skip behavior' {
     It 'returns a finished skipped handle when the lock is held' {
         $s = [pscustomobject]@{
             Name = 'skiptest'; Dir = $script:appDir; Entry = (Join-Path $script:appDir 'none.ps1')
             Args = @(); EnvFile = (Join-Path $script:appDir '.env')
             ModuleDir = (Join-Path $script:appDir 'mods'); TimeoutMinutes = $null
         }
-        $lock = Lock-PssScript -Name 'skiptest'
+        $lock = Lock-StoScript -Name 'skiptest'
         try {
-            $h = Start-PssRun -Script $s
+            $h = Start-StoRun -Script $s
             $h.Status | Should -Be 'skipped'
-            Test-PssRunFinished -Handle $h | Should -BeTrue
-            $result = Complete-PssRun -Handle $h
+            Test-StoRunFinished -Handle $h | Should -BeTrue
+            $result = Complete-StoRun -Handle $h
             $result.status | Should -Be 'skipped'
             $result.success | Should -BeFalse
         } finally {
-            Unlock-PssScript -Handle @{ LockFile = $lock.File }
+            Unlock-StoScript -Handle @{ LockFile = $lock.File }
         }
     }
 }
@@ -99,31 +99,31 @@ Describe 'run pipeline' {
             Args = @(); EnvFile = (Join-Path $dir '.env')
             ModuleDir = (Join-Path $dir 'mods'); TimeoutMinutes = 2
         }
-        $h = Start-PssRun -Script $s
+        $h = Start-StoRun -Script $s
         $h.TimeoutMinutes | Should -Be 2
         $lines = [System.Collections.Generic.List[string]]::new()
         $deadline = (Get-Date).AddSeconds(30)
-        while (-not (Test-PssRunFinished -Handle $h) -and (Get-Date) -lt $deadline) {
-            foreach ($l in (Update-PssRun -Handle $h)) { $lines.Add($l) }
+        while (-not (Test-StoRunFinished -Handle $h) -and (Get-Date) -lt $deadline) {
+            foreach ($l in (Update-StoRun -Handle $h)) { $lines.Add($l) }
             Start-Sleep -Milliseconds 50
         }
-        foreach ($l in (Update-PssRun -Handle $h)) { $lines.Add($l) }
-        $result = Complete-PssRun -Handle $h
+        foreach ($l in (Update-StoRun -Handle $h)) { $lines.Add($l) }
+        $result = Complete-StoRun -Handle $h
 
         $result.status | Should -Be 'success'
         $lines | Should -Contain 'out line'
-        Test-Path (Join-Path (Get-PssPaths).LocksDir 'ok.lock') | Should -BeFalse
-        (Get-PssLastStatuses)['ok'].Status | Should -Be 'success'
-        (Get-PssLastStatuses)['ok'].At | Should -BeOfType [datetime]
+        Test-Path (Join-Path (Get-StoPaths).LocksDir 'ok.lock') | Should -BeFalse
+        (Get-StoLastStatuses)['ok'].Status | Should -Be 'success'
+        (Get-StoLastStatuses)['ok'].At | Should -BeOfType [datetime]
     }
 }
 
-Describe 'Get-PssDownsampledSeries' {
+Describe 'Get-StoDownsampledSeries' {
     It 'passes short series through' {
-        Get-PssDownsampledSeries -Series @(1.0, 2.0) -MaxPoints 60 | Should -Be @(1.0, 2.0)
+        Get-StoDownsampledSeries -Series @(1.0, 2.0) -MaxPoints 60 | Should -Be @(1.0, 2.0)
     }
     It 'downsamples to MaxPoints keeping bucket maxima' {
-        $r = @(Get-PssDownsampledSeries -Series @(1..100 | ForEach-Object { [double]$_ }) -MaxPoints 10)
+        $r = @(Get-StoDownsampledSeries -Series @(1..100 | ForEach-Object { [double]$_ }) -MaxPoints 10)
         $r.Count | Should -Be 10
         $r[9] | Should -Be 100
         $r[0] | Should -Be 10
@@ -132,7 +132,7 @@ Describe 'Get-PssDownsampledSeries' {
 
 Describe 'webhook dead-letter queue' {
     It 'flushes nothing when the queue file is absent' {
-        Send-PssWebhookQueue | Should -Be 0
+        Send-StoWebhookQueue | Should -Be 0
     }
 }
 
@@ -146,10 +146,10 @@ Describe 'python run pipeline' {
             Runtime = 'python'; Repo = 'pyrepo'
             Args = @(); EnvFile = (Join-Path $dir '.env')
             ModuleDir = (Join-Path $dir 'mods'); TimeoutMinutes = 3
-            VenvDir = (Join-Path (Get-PssPaths).VenvsDir 'pyok')
+            VenvDir = (Join-Path (Get-StoPaths).VenvsDir 'pyok')
         }
-        $h = Start-PssRun -Script $s -ExtraEnv @{ PSS_PY_TEST = 'hello-from-env' }
-        $result = Invoke-PssRunToCompletion -Handle $h
+        $h = Start-StoRun -Script $s -ExtraEnv @{ PSS_PY_TEST = 'hello-from-env' }
+        $result = Invoke-StoRunToCompletion -Handle $h
         $result.status | Should -Be 'success'
         $result.runtime | Should -Be 'python'
         $result.repo | Should -Be 'pyrepo'
@@ -158,6 +158,6 @@ Describe 'python run pipeline' {
         $log = Get-Content $result.logFile -Raw
         $log | Should -Match 'py out \*\*\*'
         $log | Should -Not -Match 'hello-from-env'
-        Test-Path (Join-Path (Get-PssPaths).LocksDir 'pyok.lock') | Should -BeFalse
+        Test-Path (Join-Path (Get-StoPaths).LocksDir 'pyok.lock') | Should -BeFalse
     }
 }

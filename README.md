@@ -1,4 +1,4 @@
-# PowerShell Scripts TUI
+# Scriptorium
 
 A terminal UI (pure PowerShell 7, zero other runtime dependencies) for running **PowerShell and Python** scripts on an Ubuntu server. Scripts live in one or more private GitHub repos, each script gets its own isolated environment (a module directory for PowerShell, a venv for Python), and every run is reported to an n8n webhook with logs and resource usage.
 
@@ -54,37 +54,47 @@ Styled with the [Night Owl (dark)](https://terminalcolors.com/themes/night-owl/d
 1. Install (one-liner — no credentials needed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yshah-aromatech/powershell-scripts-tui/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yshah-aromatech/scriptorium/main/install.sh | bash
 ```
 
-`install.sh` installs missing prerequisites (git, PowerShell 7 via the Microsoft apt repo), clones the app to `~/powershell-scripts-tui` (override with `PSSCRIPTS_APP_DIR`), creates `config.json` + `.env` from the examples, and adds a `psscripts` launcher to `~/.local/bin`. Prefer to inspect first? Clone and run it from the checkout instead:
+`install.sh` installs missing prerequisites (git, PowerShell 7 via the Microsoft apt repo), clones the app to `~/scriptorium` (override with `SCRIPTORIUM_APP_DIR`), creates `config.json` + `.env` from the examples, and adds a `scriptorium` launcher to `~/.local/bin`. Prefer to inspect first? Clone and run it from the checkout instead:
 
 ```bash
-git clone https://github.com/yshah-aromatech/powershell-scripts-tui.git && cd powershell-scripts-tui && ./install.sh
+git clone https://github.com/yshah-aromatech/scriptorium.git && cd scriptorium && ./install.sh
 ```
 
 2. If your *scripts* repo is private, create a fine-grained PAT for it (github.com → Settings → Developer settings → Fine-grained tokens):
-   - Repository access: select your PowerShell scripts repo
+   - Repository access: select your scripts repo(s)
    - Permissions: **Contents: Read-only**
 
 3. Configure:
    - `config.json` — set `scriptsRepo` (HTTPS URL of your private scripts repo) and `n8nWebhookUrl`
    - `.env` — if the scripts repo is private, set `GITHUB_TOKEN=` to the PAT (used to clone/pull the scripts repo; redacted in all TUI output). `SCRIPTS_REPO=` can also be set here and overrides `scriptsRepo` in `config.json`
 
-4. Run: `psscripts`
+4. Run: `scriptorium`
 
 ## Updating
 
 Everything updates from inside the TUI:
 
-- **`U` — update this app**: `git pull --ff-only` on the install directory; restart `psscripts` to apply.
+- **`U` — update this app**: `git pull --ff-only` on the install directory; restart `scriptorium` to apply.
 - **`u` — update PowerShell + modules**: upgrades PowerShell via apt (needs passwordless sudo for `apt-get`, or it prints the command to run manually), then upgrades every script's module dir.
 
 Or from the shell — rerunning the install one-liner is also safe (it pulls instead of recloning):
 
 ```bash
-cd ~/powershell-scripts-tui && git pull
+cd ~/scriptorium && git pull
 ```
+
+### Upgrading from powershell-scripts-tui (the old name)
+
+This app used to be called **powershell-scripts-tui** (command: `psscripts`). Existing installs migrate automatically — after a `git pull`:
+
+- `psscripts.ps1` remains as a shim that forwards to `scriptorium.ps1`, so the old launcher, existing crontab entries, and an installed `psscripts-mcp` systemd service keep working untouched.
+- On first launch, `~/.psscripts` is moved to `~/.scriptorium` (only if `dataDir` is the default). Data, history, module dirs, and venvs all carry over.
+- Schedules written under the old crontab markers are still read, and are rewritten under the new markers the next time you save a schedule.
+- Re-run `./install.sh` to get the `scriptorium` launcher (the old `psscripts` command is kept as a symlink), and re-run `scriptorium --install-mcp-service` to replace the `psscripts-mcp` unit with `scriptorium-mcp`.
+- The old GitHub URL redirects to the renamed repo, so existing clones keep pulling without changes.
 
 ## Scripts repo layout
 
@@ -109,11 +119,11 @@ The entry point for each folder is resolved in this order: `script.json`'s `"ent
 The quickest way to add a second (third, …) scripts repo:
 
 ```bash
-psscripts --add-repo https://github.com/YOUR_ORG/python-scripts --name python
-psscripts --sync
+scriptorium --add-repo https://github.com/YOUR_ORG/python-scripts --name python
+scriptorium --sync
 ```
 
-`--add-repo` updates `config.json` for you (a legacy `scriptsRepo` config is converted to a `repos` entry first, so the existing repo keeps syncing); `--name` and `--branch` are optional — the name defaults to the URL's basename, the branch to `main`. `psscripts --repos` lists what's configured. Or edit the `repos` array in `config.json` directly:
+`--add-repo` updates `config.json` for you (a legacy `scriptsRepo` config is converted to a `repos` entry first, so the existing repo keeps syncing); `--name` and `--branch` are optional — the name defaults to the URL's basename, the branch to `main`. `scriptorium --repos` lists what's configured. Or edit the `repos` array in `config.json` directly:
 
 ```json
 "repos": [
@@ -122,7 +132,7 @@ psscripts --sync
 ]
 ```
 
-Each repo clones into `~/.psscripts/scripts/<name>/` (an existing single-repo clone is migrated into its subfolder automatically on the next sync). One `GITHUB_TOKEN` covers all repos — the fine-grained PAT needs Contents:Read on each. Script names must be unique across repos; a duplicate folder name gets qualified as `<repoName>-<folder>` (with a verbose warning) — keep folder names unique to avoid it. With only the legacy `scriptsRepo` key set, everything works exactly as before.
+Each repo clones into `~/.scriptorium/scripts/<name>/` (an existing single-repo clone is migrated into its subfolder automatically on the next sync). One `GITHUB_TOKEN` covers all repos — the fine-grained PAT needs Contents:Read on each. Script names must be unique across repos; a duplicate folder name gets qualified as `<repoName>-<folder>` (with a verbose warning) — keep folder names unique to avoid it. With only the legacy `scriptsRepo` key set, everything works exactly as before.
 
 ## Per-script .env files
 
@@ -132,7 +142,7 @@ Every per-script `.env` value (8+ characters) is treated as a secret and replace
 
 Keep `.env` gitignored in the scripts repo and commit a `.env.example` instead — when a script has no `.env` yet, the editor opens pre-filled from `.env.example`. Local `.env` files survive repo syncs (the hard-reset/clean excludes them), but a tracked `.env` would be overwritten by sync on every change from the repo.
 
-Module dirs, the scripts clone, logs, history, per-script locks, the webhook retry queue, and tools (PSScriptAnalyzer) are stored under `~/.psscripts/` (configurable via `dataDir`). Logs older than `logRetentionDays` and history beyond `historyMaxLines` are pruned automatically at startup.
+Module dirs, the scripts clone, logs, history, per-script locks, the webhook retry queue, and tools (PSScriptAnalyzer) are stored under `~/.scriptorium/` (configurable via `dataDir`). Logs older than `logRetentionDays` and history beyond `historyMaxLines` are pruned automatically at startup.
 
 ## n8n webhook payload
 
@@ -161,14 +171,14 @@ POSTed as JSON after every run (and `{"event":"test"}` for webhook tests):
     "cpuSeries": [12.1, 45.0, 87.1, "..."],
     "memSeries": [80.2, 145.0, 312.8, "..."]
   },
-  "logFile": "/home/user/.psscripts/logs/backup-db-2026-06-10T12-00-00-000Z.log",
+  "logFile": "/home/user/.scriptorium/logs/backup-db-2026-06-10T12-00-00-000Z.log",
   "log": "...last 64KB of output..."
 }
 ```
 
 `status` is one of `success`, `failure`, `killed`, `timeout`, `skipped` (a run that didn't start because the same script was already running). `cpuSeries`/`memSeries` are the per-second samples downsampled to at most 60 points.
 
-Delivery is attempted twice; if both attempts fail the payload is appended to `~/.psscripts/webhook-queue.jsonl` and re-sent (in order) right after the next successful delivery.
+Delivery is attempted twice; if both attempts fail the payload is appended to `~/.scriptorium/webhook-queue.jsonl` and re-sent (in order) right after the next successful delivery.
 
 ## Scheduling
 
@@ -177,27 +187,27 @@ Press `e` on a script and type either a 5-field cron expression (or `@hourly` / 
 The app maintains a marked block in your user crontab; everything outside the block is untouched. Each scheduled entry runs:
 
 ```
-cd <app-dir> && pwsh -NoProfile -File psscripts.ps1 --run <script> --cron >> ~/.psscripts/logs/cron-<script>.log 2>&1
+cd <app-dir> && pwsh -NoProfile -File scriptorium.ps1 --run <script> --cron >> ~/.scriptorium/logs/cron-<script>.log 2>&1
 ```
 
 Headless mode also works manually:
 
 | Command | Effect |
 | --- | --- |
-| `psscripts --run <script>` | run one script with the full dep-check/webhook pipeline, missing modules auto-installed without prompting (exit code: 0 success, 1 failure, 3 skipped/already running) |
-| `psscripts --run <script> --args "-Flag 'a b'"` | same, with extra arguments (quote-aware splitting) |
-| `psscripts --list` | list discovered scripts with last status and schedule |
-| `psscripts --sync` | sync all scripts repos and exit (useful from cron) |
-| `psscripts --repos` | list configured scripts repos |
-| `psscripts --add-repo <url> [--name <n>] [--branch <b>]` | add a scripts repo to config.json |
-| `psscripts --history [script]` | print recent runs, optionally for one script |
-| `psscripts --mcp [--port <n>]` | serve the built-in MCP server so AI agents (e.g. n8n) can list/run scripts — see below |
+| `scriptorium --run <script>` | run one script with the full dep-check/webhook pipeline, missing modules auto-installed without prompting (exit code: 0 success, 1 failure, 3 skipped/already running) |
+| `scriptorium --run <script> --args "-Flag 'a b'"` | same, with extra arguments (quote-aware splitting) |
+| `scriptorium --list` | list discovered scripts with last status and schedule |
+| `scriptorium --sync` | sync all scripts repos and exit (useful from cron) |
+| `scriptorium --repos` | list configured scripts repos |
+| `scriptorium --add-repo <url> [--name <n>] [--branch <b>]` | add a scripts repo to config.json |
+| `scriptorium --history [script]` | print recent runs, optionally for one script |
+| `scriptorium --mcp [--port <n>]` | serve the built-in MCP server so AI agents (e.g. n8n) can list/run scripts — see below |
 
-A cron or manual run of a script that is already running elsewhere is **skipped** (per-script lock under `~/.psscripts/locks/`), recorded in history, and reported to the webhook with `"status": "skipped"` — long runs never stack.
+A cron or manual run of a script that is already running elsewhere is **skipped** (per-script lock under `~/.scriptorium/locks/`), recorded in history, and reported to the webhook with `"status": "skipped"` — long runs never stack.
 
 ## MCP server (AI agents / n8n)
 
-`psscripts --mcp` starts a built-in [MCP](https://modelcontextprotocol.io) server so an AI agent — e.g. an n8n **AI Agent** node with the built-in **MCP Client Tool** — can operate the app over the LAN. It speaks the streamable-HTTP transport (plain JSON responses, stateless, no SSE) on `POST /mcp`, with `GET /healthz` for liveness.
+`scriptorium --mcp` starts a built-in [MCP](https://modelcontextprotocol.io) server so an AI agent — e.g. an n8n **AI Agent** node with the built-in **MCP Client Tool** — can operate the app over the LAN. It speaks the streamable-HTTP transport (plain JSON responses, stateless, no SSE) on `POST /mcp`, with `GET /healthz` for liveness.
 
 **Tools exposed:**
 
@@ -223,10 +233,10 @@ MCP-triggered runs go through the exact same pipeline as manual/cron runs: per-s
 3. Install it as a systemd service so it runs at boot, with no terminal open:
 
 ```bash
-psscripts --install-mcp-service
+scriptorium --install-mcp-service
 ```
 
-Run as root this writes a system unit (`/etc/systemd/system/psscripts-mcp.service`); as a normal user it writes a user unit + enables lingering, so it survives logout and reboots either way. Check with `systemctl status psscripts-mcp` (add `--user` for the user variant); logs via `journalctl -u psscripts-mcp -f`. Re-run the command after changing `mcpPort`/`mcpBind`. For a quick foreground session instead, `psscripts --mcp` works too. (Don't put `--mcp` in the crontab managed block — that block is regenerated from schedules and foreign lines are dropped.)
+Run as root this writes a system unit (`/etc/systemd/system/scriptorium-mcp.service`); as a normal user it writes a user unit + enables lingering, so it survives logout and reboots either way. Check with `systemctl status scriptorium-mcp` (add `--user` for the user variant); logs via `journalctl -u scriptorium-mcp -f`. Re-run the command after changing `mcpPort`/`mcpBind`. For a quick foreground session instead, `scriptorium --mcp` works too. (Don't put `--mcp` in the crontab managed block — that block is regenerated from schedules and foreign lines are dropped.)
 
 4. In n8n: add an **AI Agent** node, attach an **MCP Client Tool** sub-node with Endpoint `http://<server-ip>:8765/mcp`, Server Transport **HTTP Streamable**, and a **Bearer** credential holding the token. The agent will discover the three tools automatically.
 
@@ -244,7 +254,7 @@ Notes: tool calls execute one at a time (a long run blocks the next request — 
 The `u` key runs `sudo -n apt-get ...` (non-interactive). To allow it without a password prompt, add a sudoers rule:
 
 ```bash
-echo "$USER ALL=(root) NOPASSWD: /usr/bin/apt-get" | sudo tee /etc/sudoers.d/psscripts-apt
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/apt-get" | sudo tee /etc/sudoers.d/scriptorium-apt
 ```
 
 Otherwise the TUI prints the exact commands to run manually (and still upgrades the script module dirs, which need no sudo).
@@ -255,7 +265,7 @@ Otherwise the TUI prints the exact commands to run manually (and still upgrades 
 | --- | --- | --- |
 | `scriptsRepo` | HTTPS URL of the private scripts repo (or set `SCRIPTS_REPO` in `.env`) | — |
 | `branch` | branch to sync | `main` |
-| `dataDir` | where scripts/module dirs/logs/history live | `~/.psscripts` |
+| `dataDir` | where scripts/module dirs/logs/history live | `~/.scriptorium` |
 | `n8nWebhookUrl` | n8n webhook endpoint (or set `N8N_WEBHOOK_URL` in `.env`) | — |
 | `repos` | array of `{name, url, branch}` scripts repos (overrides `scriptsRepo`/`branch`) | `[]` |
 | `pwshBin` | pwsh used to run PowerShell scripts | `pwsh` |
@@ -281,7 +291,7 @@ Unknown keys and non-numeric values for numeric keys are reported as warnings at
 - **module install fails** — check the module name exists on the [PowerShell Gallery](https://www.powershellgallery.com); corporate networks may need a proxy (`$env:HTTPS_PROXY`).
 - **webhook not firing** — press `t` to send a test event; check the n8n workflow is active and the URL is the production webhook URL, not the test one.
 - **garbled UI** — the TUI needs UTF-8 and truecolor for best results; terminals without truecolor get an automatic 256-color fallback (`colorMode` forces either). Mouse reporting is enabled — hold Shift while dragging to select text in most terminals.
-- **wrong duplicate-run skip** — if a run was killed hard (host reboot) a stale lock may linger in `~/.psscripts/locks/`; it's reclaimed automatically when the owning PID is dead, or delete the file manually.
+- **wrong duplicate-run skip** — if a run was killed hard (host reboot) a stale lock may linger in `~/.scriptorium/locks/`; it's reclaimed automatically when the owning PID is dead, or delete the file manually.
 
 ## Development
 

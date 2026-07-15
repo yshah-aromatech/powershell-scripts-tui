@@ -1,7 +1,7 @@
 # Deps.psm1 — automatic dependency detection and per-script isolation for
 # both runtimes: PowerShell scripts get AST-scanned module deps + a module
 # dir prepended to PSModulePath; Python scripts get import-scanned pip deps
-# + a per-script venv. Get-PssMissingDeps/Get-PssInstallCommand dispatch on
+# + a per-script venv. Get-StoMissingDeps/Get-StoInstallCommand dispatch on
 # Script.Runtime so callers don't care which is which.
 
 # Modules that ship with PowerShell 7 / are always available — never installed.
@@ -27,7 +27,7 @@ $script:ModuleNameMap = @{
 # (RequiredVersion exact, MinimumVersion/MaximumVersion bounds — only
 # #Requires -Modules hashtable syntax carries versions). Display is the
 # human-readable form used in prompts and output.
-function New-PssDep {
+function New-StoDep {
     param([string]$Name, [string]$RequiredVersion, [string]$MinimumVersion, [string]$MaximumVersion)
     $disp = $Name
     if ($RequiredVersion) { $disp = "$Name (=$RequiredVersion)" }
@@ -50,7 +50,7 @@ function New-PssDep {
 #   - Import-Module / ipmo calls
 # Local files (paths, .psm1/.psd1 in the script folder) and builtins excluded.
 # ---------------------------------------------------------------------------
-function Get-PssScriptDeps {
+function Get-StoScriptDeps {
     param([Parameter(Mandatory)]$Script)
 
     # name(lower) -> version spec; a versioned mention wins over a bare one
@@ -113,7 +113,7 @@ function Get-PssScriptDeps {
             # bare positional element — only the first one carries module name(s);
             # anything later is a stray value, not a second module to install.
             if (-not $gotName) {
-                foreach ($name in (Resolve-PssModuleElement $el)) { & $addDep $name }
+                foreach ($name in (Resolve-StoModuleElement $el)) { & $addDep $name }
                 $gotName = $true
             }
         }
@@ -131,13 +131,13 @@ function Get-PssScriptDeps {
         if (Test-Path (Join-Path $Script.Dir $d)) { continue }                   # local module folder
         $mapped = if ($script:ModuleNameMap.ContainsKey($d.ToLower())) { $script:ModuleNameMap[$d.ToLower()] } else { $d }
         if ($seen.Add($mapped)) {
-            $result.Add((New-PssDep -Name $mapped -RequiredVersion $spec.Rv -MinimumVersion $spec.MinV -MaximumVersion $spec.MaxV))
+            $result.Add((New-StoDep -Name $mapped -RequiredVersion $spec.Rv -MinimumVersion $spec.MinV -MaximumVersion $spec.MaxV))
         }
     }
     $result | Sort-Object Name
 }
 
-function Resolve-PssModuleElement {
+function Resolve-StoModuleElement {
     param($Element)
     $names = @()
     if ($Element -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
@@ -154,7 +154,7 @@ function Resolve-PssModuleElement {
 # What's missing = declared deps minus (script module dir + system modules),
 # with version constraints checked against the installed versions.
 # ---------------------------------------------------------------------------
-function Get-PssInstalledModules {
+function Get-StoInstalledModules {
     # name(lower) -> list of installed [version]s (0.0 when unknown)
     param([Parameter(Mandatory)]$Script)
     $installed = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -180,7 +180,7 @@ function Get-PssInstalledModules {
     $installed
 }
 
-function Test-PssDepSatisfied {
+function Test-StoDepSatisfied {
     param([Parameter(Mandatory)]$Dep, [Parameter(Mandatory)]$Installed)
     if (-not $Installed.ContainsKey($Dep.Name)) { return $false }
     $versions = $Installed[$Dep.Name]
@@ -195,30 +195,30 @@ function Test-PssDepSatisfied {
     [bool]($versions | Where-Object { (-not $min -or $_ -ge $min) -and (-not $max -or $_ -le $max) })
 }
 
-function Get-PssMissingDeps {
+function Get-StoMissingDeps {
     param([Parameter(Mandatory)]$Script)
-    if (Test-PssPythonScript $Script) { return @(Get-PssMissingPythonDeps -Script $Script) }
-    $deps = @(Get-PssScriptDeps -Script $Script)
+    if (Test-StoPythonScript $Script) { return @(Get-StoMissingPythonDeps -Script $Script) }
+    $deps = @(Get-StoScriptDeps -Script $Script)
     if (-not $deps) { return @() }
-    $installed = Get-PssInstalledModules -Script $Script
-    @($deps | Where-Object { -not (Test-PssDepSatisfied -Dep $_ -Installed $installed) })
+    $installed = Get-StoInstalledModules -Script $Script
+    @($deps | Where-Object { -not (Test-StoDepSatisfied -Dep $_ -Installed $installed) })
 }
 
 # ---------------------------------------------------------------------------
 # Build the pwsh -Command string that installs modules into the script's
 # module dir. Run as a streamed task so the TUI shows live progress.
 # ---------------------------------------------------------------------------
-function Get-PssInstallCommand {
-    # $Modules: dep objects from Get-PssScriptDeps/Get-PssMissingDeps (plain
+function Get-StoInstallCommand {
+    # $Modules: dep objects from Get-StoScriptDeps/Get-StoMissingDeps (plain
     # strings also accepted — treated as unversioned names)
     param([Parameter(Mandatory)]$Script, [Parameter(Mandatory)][object[]]$Modules)
-    if (Test-PssPythonScript $Script) { return Get-PssPythonInstallCommand -Script $Script -Deps $Modules }
+    if (Test-StoPythonScript $Script) { return Get-StoPythonInstallCommand -Script $Script -Deps $Modules }
     if (-not (Test-Path $Script.ModuleDir)) {
         New-Item -ItemType Directory -Path $Script.ModuleDir -Force | Out-Null
     }
     $dir = $Script.ModuleDir
     $specs = ($Modules | ForEach-Object {
-            $m = if ($_ -is [string]) { New-PssDep -Name $_ } else { $_ }
+            $m = if ($_ -is [string]) { New-StoDep -Name $_ } else { $_ }
             $n = [string]$m.Name -replace "'", "''"
             "@{ Name='$n'; Rv='$($m.RequiredVersion)'; MinV='$($m.MinimumVersion)'; MaxV='$($m.MaximumVersion)' }"
         }) -join ', '
@@ -254,8 +254,8 @@ if (-not `$ok) { exit 1 }
 
 # pwsh -Command string that re-saves the latest version of every module in
 # every per-script module dir (used by the system update action).
-function Get-PssModuleUpgradeCommand {
-    $paths = Get-PssPaths
+function Get-StoModuleUpgradeCommand {
+    $paths = Get-StoPaths
     @"
 `$root = '$($paths.ModulesDir)'
 if (-not (Test-Path `$root)) { Write-Host 'no module dirs yet'; exit 0 }
@@ -281,7 +281,7 @@ Write-Host 'module upgrade complete'
 # POSIX-only (venv at <VenvDir>/bin/python), same stance as /proc sampling.
 # ===========================================================================
 
-function Test-PssPythonScript {
+function Test-StoPythonScript {
     param($Script)
     $null -ne $Script.PSObject.Properties['Runtime'] -and "$($Script.Runtime)" -eq 'python'
 }
@@ -325,7 +325,7 @@ $script:PipNameMap = @{
     'google'      = 'google-api-python-client'
 }
 
-function Get-PssPipName {
+function Get-StoPipName {
     param([string]$Module)
     if ($script:PipNameMap.ContainsKey($Module)) { $script:PipNameMap[$Module] } else { $Module }
 }
@@ -378,24 +378,24 @@ for m in third_party:
 print(json.dumps({"missing": missing, "installed": installed}))
 '@
 
-function Get-PssVenvPython {
+function Get-StoVenvPython {
     param([Parameter(Mandatory)]$Script)
     Join-Path $Script.VenvDir 'bin/python'
 }
 
-function Test-PssVenv {
+function Test-StoVenv {
     param([Parameter(Mandatory)]$Script)
-    Test-Path (Get-PssVenvPython -Script $Script)
+    Test-Path (Get-StoVenvPython -Script $Script)
 }
 
 # Requirements.txt package names (comments/options/version specifiers stripped)
-function Get-PssRequirementsFile {
+function Get-StoRequirementsFile {
     param([Parameter(Mandatory)]$Script)
     $p = Join-Path $Script.Dir 'requirements.txt'
     if (Test-Path $p) { $p } else { $null }
 }
 
-function Read-PssRequirements {
+function Read-StoRequirements {
     param([Parameter(Mandatory)][string]$Path)
     $names = [System.Collections.Generic.List[string]]::new()
     foreach ($line in (Get-Content $Path -ErrorAction SilentlyContinue)) {
@@ -412,29 +412,29 @@ function Read-PssRequirements {
 # to install). A missing venv means nothing is installed yet, so everything
 # third-party is missing; the scanner still runs (with the system python) to
 # FIND the imports, its installed/missing split is just ignored then.
-function Get-PssMissingPythonDeps {
+function Get-StoMissingPythonDeps {
     param([Parameter(Mandatory)]$Script)
-    $cfg = Get-PssConfig
-    $hasVenv = Test-PssVenv -Script $Script
+    $cfg = Get-StoConfig
+    $hasVenv = Test-StoVenv -Script $Script
 
-    $reqFile = Get-PssRequirementsFile -Script $Script
+    $reqFile = Get-StoRequirementsFile -Script $Script
     if ($reqFile) {
-        $wanted = @(Read-PssRequirements -Path $reqFile)
+        $wanted = @(Read-StoRequirements -Path $reqFile)
         if (-not $wanted) { return @() }
         $have = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         if ($hasVenv) {
             try {
-                $json = & (Get-PssVenvPython -Script $Script) -m pip list --format=json 2>$null
+                $json = & (Get-StoVenvPython -Script $Script) -m pip list --format=json 2>$null
                 foreach ($p in ("$json" | ConvertFrom-Json)) { [void]$have.Add(("$($p.name)" -replace '_', '-')) }
             } catch { }
         }
         return @($wanted | Where-Object { -not $have.Contains(($_ -replace '_', '-')) } | ForEach-Object {
-                $d = New-PssDep -Name $_
+                $d = New-StoDep -Name $_
                 $d | Add-Member -NotePropertyName PipName -NotePropertyValue $_ -PassThru
             })
     }
 
-    $py = if ($hasVenv) { Get-PssVenvPython -Script $Script } else { [string]$cfg.pythonBin }
+    $py = if ($hasVenv) { Get-StoVenvPython -Script $Script } else { [string]$cfg.pythonBin }
     if (-not (Get-Command $py -ErrorAction SilentlyContinue) -and -not (Test-Path $py)) { return @() }
     $out = & $py -c $script:PythonScanner $Script.Dir 2>&1
     if ($LASTEXITCODE -ne 0) { return @() }
@@ -444,8 +444,8 @@ function Get-PssMissingPythonDeps {
 
     $missing = if ($hasVenv) { @($scan.missing) } else { @($scan.missing) + @($scan.installed) }
     @($missing | Sort-Object | ForEach-Object {
-            $pip = Get-PssPipName $_
-            $d = New-PssDep -Name $_
+            $pip = Get-StoPipName $_
+            $d = New-StoDep -Name $_
             if ($pip -ne $_) { $d.Display = "$_ (pip: $pip)" }
             $d | Add-Member -NotePropertyName PipName -NotePropertyValue $pip -PassThru
         })
@@ -454,21 +454,21 @@ function Get-PssMissingPythonDeps {
 # pwsh -Command string that ensures the venv exists then pip-installs the
 # packages (or requirements.txt when present) — same streamed-task calling
 # convention as the module install command.
-function Get-PssPythonInstallCommand {
+function Get-StoPythonInstallCommand {
     param([Parameter(Mandatory)]$Script, [object[]]$Deps = @())
-    $cfg = Get-PssConfig
+    $cfg = Get-StoConfig
     $venv = $Script.VenvDir -replace "'", "''"
-    $py = (Get-PssVenvPython -Script $Script) -replace "'", "''"
+    $py = (Get-StoVenvPython -Script $Script) -replace "'", "''"
     $pythonBin = ([string]$cfg.pythonBin) -replace "'", "''"
 
-    $reqFile = Get-PssRequirementsFile -Script $Script
+    $reqFile = Get-StoRequirementsFile -Script $Script
     $installLine = if ($reqFile) {
         "& '$py' -m pip install -r '$($reqFile -replace "'", "''")'"
     } else {
         $pkgs = @($Deps | ForEach-Object {
-                if ($_ -is [string]) { Get-PssPipName $_ }
+                if ($_ -is [string]) { Get-StoPipName $_ }
                 elseif ($null -ne $_.PSObject.Properties['PipName']) { [string]$_.PipName }
-                else { Get-PssPipName ([string]$_.Name) }
+                else { Get-StoPipName ([string]$_.Name) }
             } | Select-Object -Unique)
         if ($pkgs.Count -eq 0) { 'Write-Host "nothing to install"' }
         else {
@@ -493,10 +493,10 @@ Write-Host 'python deps installed'
 
 # pwsh -Command string that upgrades the system pip (PEP 668 aware), then
 # pip + all outdated packages in every script venv (python counterpart of
-# Get-PssModuleUpgradeCommand; port of python-scripts-tui system.ts).
-function Get-PssVenvUpgradeCommand {
-    $paths = Get-PssPaths
-    $cfg = Get-PssConfig
+# Get-StoModuleUpgradeCommand; port of python-scripts-tui system.ts).
+function Get-StoVenvUpgradeCommand {
+    $paths = Get-StoPaths
+    $cfg = Get-StoConfig
     $pythonBin = ([string]$cfg.pythonBin) -replace "'", "''"
     @"
 if (Get-Command '$pythonBin' -ErrorAction SilentlyContinue) {
@@ -541,7 +541,7 @@ if (`$broken) { exit 1 }
 "@
 }
 
-Export-ModuleMember -Function Get-PssScriptDeps, Get-PssMissingDeps, Get-PssInstalledModules,
-Test-PssDepSatisfied, Get-PssInstallCommand, Get-PssModuleUpgradeCommand, New-PssDep,
-Test-PssPythonScript, Get-PssPipName, Get-PssVenvPython, Test-PssVenv, Read-PssRequirements,
-Get-PssMissingPythonDeps, Get-PssPythonInstallCommand, Get-PssVenvUpgradeCommand
+Export-ModuleMember -Function Get-StoScriptDeps, Get-StoMissingDeps, Get-StoInstalledModules,
+Test-StoDepSatisfied, Get-StoInstallCommand, Get-StoModuleUpgradeCommand, New-StoDep,
+Test-StoPythonScript, Get-StoPipName, Get-StoVenvPython, Test-StoVenv, Read-StoRequirements,
+Get-StoMissingPythonDeps, Get-StoPythonInstallCommand, Get-StoVenvUpgradeCommand

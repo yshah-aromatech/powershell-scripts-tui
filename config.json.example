@@ -2,7 +2,7 @@
   "scriptsRepo": "https://github.com/YOUR_ORG/your-powershell-scripts-repo",
   "branch": "main",
   "repos": [],
-  "dataDir": "~/.psscripts",
+  "dataDir": "~/.scriptorium",
   "n8nWebhookUrl": "",
   "pwshBin": "pwsh",
   "pythonBin": "python3",
